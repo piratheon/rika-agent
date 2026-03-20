@@ -1,12 +1,19 @@
+<<<<<<< HEAD
 # Rikka-Bot Exclusions
 
 # Core Plan (Internal)
 plan.md
 ToDo.md
+=======
+# Environment
+.env
+*.env
+>>>>>>> 7599a86 (Upgrade: From rika-bot to rika-agent)
 
 # Python
 __pycache__/
 *.py[cod]
+<<<<<<< HEAD
 *$py.class
 .venv/
 venv/
@@ -28,6 +35,35 @@ config.json
 # Logs
 rikka.log*
 *.log
+=======
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Data and logs
+data/
+logs/
+*.log
+*.db
+*.sqlite
+
+# Vector DB
+data/vector_db/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Secrets
+soul.md
+config.json
+ToDo.md
+>>>>>>> 7599a86 (Upgrade: From rika-bot to rika-agent)
 
 # OS
 .DS_Store
