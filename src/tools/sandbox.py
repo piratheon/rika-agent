@@ -58,15 +58,44 @@ async def _run_level0(code: str, timeout: int) -> Dict[str, Any]:
     for banned in ("open", "eval", "exec", "compile", "__import__"):
         builtins.pop(banned, None)
 
-    gdict: Dict[str, Any] = {"__builtins__": builtins}
+    # RestrictedPython rewrites print() → _print_(), iteration → _getiter_(),
+    # and attribute access → _getattr_(). All must be in globals.
+    try:
+        from RestrictedPython.PrintCollector import PrintCollector as _PC
+        _print_impl = _PC
+    except ImportError:
+        # Fallback: simple print that captures to stdout
+        import io as _io
+        _buf_ref: list = []
+        class _PC:
+            def __init__(self, _getiter_=None): pass
+            def __call__(self, *a, **kw): _buf_ref.append(" ".join(str(x) for x in a))
+            def __str__(self): return chr(10).join(_buf_ref)
+        _print_impl = _PC
+    gdict: Dict[str, Any] = {
+        "__builtins__": builtins,
+        "_print_": _print_impl,
+        "_getiter_": iter,
+        "_getattr_": getattr,
+        "_write_": lambda x: x,
+    }
     ldict: Dict[str, Any] = {}
 
     def _run() -> Dict[str, Any]:
         buf = io.StringIO()
         try:
-            code_obj = compile_restricted_exec(code)
+            result = compile_restricted_exec(code)
+            if result.errors:
+                return {"stdout": "", "stderr": "\n".join(result.errors),
+                        "exit_code": 1, "isolation": "none"}
+            # Inject _getiter_ into print collector if it needs it
+            if "_print_" in gdict:
+                try:
+                    gdict["_print_"] = gdict["_print_"](_getiter_=iter)
+                except Exception:
+                    pass
             with contextlib.redirect_stdout(buf):
-                exec(code_obj, gdict, ldict)  # noqa: S102
+                exec(result.code, gdict, ldict)  # noqa: S102
             return {"stdout": buf.getvalue(), "stderr": "", "exit_code": 0,
                     "result": repr(ldict.get("result")), "isolation": "none"}
         except Exception as exc:

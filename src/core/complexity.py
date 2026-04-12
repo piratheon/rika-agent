@@ -44,14 +44,31 @@ async def classify_complexity(
 
     # Tier 2 — definitely complex (no LLM call)
     _COMPLEX_KEYWORDS = [
-        "search", "find", "fetch", "run ", "execute", "check ", "analyze",
-        "research", "monitor", "calculate", "wikipedia", "curl ", "shell",
-        "install ", "download ", "git ", "docker ", "systemctl", "grep ",
-        "ls ", "pwd", "cat ", "write a script", "write a program", "create a file",
-        "what is the price", "who is the ceo", "latest news", "current",
-        "memory", "remember ", "delegate", "uptime", "disk usage",
+        # web / network
+        "search", "find", "fetch", "curl ", "wikipedia", "browse", "lookup",
+        "scrape", "download ", "latest news", "what is the price",
+        "who is the ceo", "current", "today", "weather", "stock", "news",
+        # code / system
+        "run ", "execute", "shell", "install ", "git ", "docker ",
+        "systemctl", "grep ", "ls ", "pwd", "cat ", "write a script",
+        "write a program", "create a file", "build", "compile", "deploy",
+        "python", "bash", "script", "code",
+        # agent / memory
+        "memory", "remember ", "delegate", "save", "skill", "workspace",
+        "uptime", "disk usage", "monitor", "check ", "analyze", "research",
+        "calculate",
+        # tool-testing phrases that triggered the bug
+        "test", "try", "demo", "show me", "use the", "use your",
+        "tool", "tools", "capability", "capabilities",
+        "what can you", "can you", "try to", "attempt",
+        # file operations
+        "read file", "write file", "list file", "create", "modify",
     ]
-    if len(text) > 200 or any(kw in t for kw in _COMPLEX_KEYWORDS):
+    # Messages longer than 80 chars are almost always non-trivial
+    if len(text) > 80:
+        logger.debug("complexity_length_match", text=text[:50])
+        return True
+    if any(kw in t for kw in _COMPLEX_KEYWORDS):
         logger.debug("complexity_keyword_match", text=text[:50])
         return True
 

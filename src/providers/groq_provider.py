@@ -10,6 +10,14 @@ from src.utils.logger import logger
 _DEFAULT_MODEL = "llama-3.3-70b-versatile"
 _VISION_MODEL  = "llama-3.2-11b-vision-preview"
 
+class GroqToolUseFailedError(Exception):
+    """Groq rejected the tool schema (too many tools / malformed generation).
+
+    This is NOT a key problem. The key is valid. The fix is to retry
+    with a smaller tool set, not a different key.
+    """
+
+
 class GroqProvider(BaseProvider):
     SUPPORTS_FUNCTION_CALLING = True
 
@@ -30,6 +38,18 @@ class GroqProvider(BaseProvider):
     def _raise_for_status(self, r: httpx.Response) -> None:
         if r.status_code == 401: raise ProviderAuthError(f"Groq auth failed: {r.text[:200]}")
         if r.status_code == 429: raise ProviderQuotaError(f"Groq quota: {r.text[:200]}")
+        if r.status_code == 400:
+            try:
+                body = r.json()
+                code = body.get("error", {}).get("code", "")
+            except Exception:
+                code = ""
+            if code == "tool_use_failed":
+                raise GroqToolUseFailedError(
+                    f"Groq tool_use_failed (too many tools or malformed schema): "
+                    f"{body.get('error',{}).get('message','')[:200]}"
+                )
+            raise ProviderTransientError(f"Groq HTTP 400: {r.text[:200]}")
         if r.status_code >= 400: raise ProviderTransientError(f"Groq HTTP {r.status_code}: {r.text[:200]}")
 
     async def request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -45,7 +65,7 @@ class GroqProvider(BaseProvider):
     async def request_with_tools(self, payload: Dict[str, Any], tool_schemas: List[Any]) -> StructuredResponse:
         payload = dict(self._fix_model(payload))
         if tool_schemas:
-            payload["tools"] = [s.to_openai() for s in tool_schemas]
+            payload["tools"] = [s.to_openai(strip_enum=True) for s in tool_schemas]
             payload["tool_choice"] = "auto"
         async with httpx.AsyncClient(timeout=60.0) as client:
             r = await client.post(f"{self.base_url}/v1/chat/completions",

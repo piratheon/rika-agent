@@ -16,6 +16,40 @@ except ImportError:
 
 _DEFAULT = "gemini-2.0-flash"
 
+def _part_text(text: str):
+    """Create a text Part compatible with all google-genai SDK versions.
+
+    Newer SDK (1.x+) uses keyword-only: Part.from_text(text=...).
+    This helper handles both old and new API transparently.
+    """
+    try:
+        return types.Part.from_text(text=str(text))
+    except TypeError:
+        return types.Part.from_text(str(text))
+
+
+def _part_function_call(name: str, args: dict):
+    """Create a FunctionCall Part — keyword-only safe."""
+    try:
+        return types.Part.from_function_call(name=name, args=args)
+    except Exception:
+        try:
+            return types.Part(function_call={"name": name, "args": args})
+        except Exception:
+            return _part_text(f"[fn_call] {name}({args})")
+
+
+def _part_function_response(name: str, response: dict):
+    """Create a FunctionResponse Part — keyword-only safe."""
+    try:
+        return types.Part.from_function_response(name=name, response=response)
+    except Exception:
+        try:
+            return types.Part(function_response={"name": name, "response": response})
+        except Exception:
+            return _part_text(f"[fn_result] {name}: {response}")
+
+
 class GeminiProvider(BaseProvider):
     SUPPORTS_FUNCTION_CALLING = True
 
@@ -30,44 +64,90 @@ class GeminiProvider(BaseProvider):
     def _loop(self):
         return asyncio.get_running_loop()
 
-    def _extract_messages(self, payload: Dict[str, Any]):
-        """Build Gemini contents + system_instruction from OpenAI-format messages."""
+    def _extract_messages(self, payload: dict):
+        """Convert OpenAI-format messages to Gemini contents + system_instruction.
+
+        Handles all four OpenAI message roles:
+          system    → system_instruction string (not a Content entry)
+          user      → role="user" Content with text or multimodal parts
+          assistant → role="model" Content; tool_calls become FunctionCall parts
+          tool      → role="user" Content with FunctionResponse part
+        """
         messages = payload.get("messages", [])
         system = ""
         contents = []
+
         for m in messages:
             role = m.get("role", "user")
-            content = m.get("content", "")
+            content = m.get("content") or ""
+
             if role == "system":
-                system = content
+                system = content if isinstance(content, str) else str(content)
                 continue
-            # Handle multimodal content (list of parts)
+
+            # tool result ────────────────────────────────────────────────────
+            if role == "tool":
+                result_text = content if isinstance(content, str) else str(content)
+                tool_call_id = m.get("tool_call_id", "")
+                # Resolve tool name from preceding model turn
+                tool_name = tool_call_id
+                for prev in reversed(contents):
+                    if getattr(prev, "role", None) == "model":
+                        for part in (prev.parts or []):
+                            fc = getattr(part, "function_call", None)
+                            if fc and getattr(fc, "id", None) == tool_call_id:
+                                tool_name = getattr(fc, "name", tool_name)
+                                break
+                        break
+                contents.append(types.Content(
+                    role="user",
+                    parts=[_part_function_response(tool_name, {"result": result_text})],
+                ))
+                continue
+
+            # assistant / model ───────────────────────────────────────────────
+            if role == "assistant":
+                parts = []
+                if content and isinstance(content, str) and content.strip():
+                    parts.append(_part_text(content))
+                for tc in m.get("tool_calls") or []:
+                    fn = tc.get("function", {})
+                    name = fn.get("name", "")
+                    raw_args = fn.get("arguments", "{}")
+                    try:
+                        import json as _j
+                        args = _j.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except Exception:
+                        args = {}
+                    parts.append(_part_function_call(name, args))
+                if parts:
+                    contents.append(types.Content(role="model", parts=parts))
+                continue
+
+            # user ────────────────────────────────────────────────────────────
             if isinstance(content, list):
                 parts = []
-                for part in content:
-                    if part.get("type") == "text":
-                        parts.append(part["text"])
-                    elif part.get("type") == "image_url":
-                        # base64 image from Telegram photo handler
-                        url = part.get("image_url", {}).get("url", "")
+                for item in content:
+                    if item.get("type") == "text":
+                        parts.append(_part_text(item["text"]))
+                    elif item.get("type") == "image_url":
+                        url = item.get("image_url", {}).get("url", "")
                         if url.startswith("data:"):
-                            media_type, b64 = url.split(";base64,")
+                            media_type, b64 = url.split(";base64,", 1)
                             media_type = media_type.replace("data:", "")
+                            import base64 as _b64
                             parts.append(types.Part.from_bytes(
-                                data=__import__("base64").b64decode(b64),
-                                mime_type=media_type,
+                                data=_b64.b64decode(b64), mime_type=media_type,
                             ))
-                content_str = "\n".join(p if isinstance(p, str) else "" for p in parts)
-                gemini_role = "user" if role == "user" else "model"
-                contents.append(types.Content(
-                    role=gemini_role,
-                    parts=[p if not isinstance(p, str) else types.Part.from_text(p) for p in parts]
-                ))
+                if parts:
+                    contents.append(types.Content(role="user", parts=parts))
             else:
-                gemini_role = "user" if role == "user" else "model"
-                contents.append(types.Content(role=gemini_role,
-                                              parts=[types.Part.from_text(str(content))]))
+                text = content if isinstance(content, str) else str(content)
+                if text.strip():
+                    contents.append(types.Content(role="user", parts=[_part_text(text)]))
+
         return contents, system
+
 
     def _resolve_model(self, payload: Dict[str, Any]) -> str:
         model = payload.get("model") or self.default_model

@@ -40,9 +40,29 @@ def _strip(html: str) -> str:
     return " ".join(text.split())
 
 
+def _decode_ddg_url(href: str) -> str:
+    """Decode DDG redirect URL to the real URL.
+    DDG wraps URLs as: /l/?uddg=<url-encoded>&...
+    """
+    if not href or "uddg=" not in href:
+        return href
+    try:
+        import urllib.parse as _up
+        parsed = _up.urlparse(href)
+        params = _up.parse_qs(parsed.query)
+        uddg = params.get("uddg", [""])[0]
+        if uddg:
+            return _up.unquote(uddg)
+    except Exception:
+        pass
+    return href
+
+
 def _extract_results(html: str, limit: int) -> List[Tuple[str, str, str]]:
     """Return list of (title, url, snippet) tuples."""
     titles_urls = _RE_RESULT.findall(html)
+    # Decode DDG redirect wrappers to real URLs
+    titles_urls = [(_decode_ddg_url(url), title) for url, title in titles_urls]
     snippets = [_strip(s) for s in _RE_SNIPPET.findall(html)]
     results = []
     for i, (url, raw_title) in enumerate(titles_urls):
@@ -70,6 +90,14 @@ async def web_search(query: str, max_results: int = 5) -> str:
             r = await client.post(_DDG_URL, data={"q": query})
             r.raise_for_status()
             html = r.text
+            # GET fallback when POST returns no results (DDG bot detection)
+            if not _RE_RESULT.search(html):
+                import urllib.parse as _up
+                r2 = await client.get(
+                    f"https://html.duckduckgo.com/html/?q={_up.quote_plus(query)}",
+                )
+                if _RE_RESULT.search(r2.text):
+                    html = r2.text
     except httpx.HTTPStatusError as exc:
         logger.error("ddg_http_error", status=exc.response.status_code, query=query)
         return f"Web search error: HTTP {exc.response.status_code}"

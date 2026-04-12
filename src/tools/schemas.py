@@ -25,11 +25,22 @@ class ToolSchema:
     parameters: Dict[str, Any] = field(default_factory=lambda: {"type": "object", "properties": {}})
     required_params: List[str] = field(default_factory=list)
 
-    def to_openai(self) -> Dict[str, Any]:
+    @staticmethod
+    def _strip_enum_for_groq(params: dict) -> dict:
+        """Remove enum fields from parameters — Groq llama models reject them."""
+        import copy
+        params = copy.deepcopy(params)
+        for prop in params.get("properties", {}).values():
+            prop.pop("enum", None)
+        return params
+
+    def to_openai(self, strip_enum: bool = False) -> Dict[str, Any]:
         """OpenAI / Groq / OpenRouter / Ollama function calling format."""
         params = dict(self.parameters)
         if self.required_params:
             params["required"] = self.required_params
+        if strip_enum:
+            params = self._strip_enum_for_groq(params)
         return {
             "type": "function",
             "function": {
@@ -80,6 +91,27 @@ def _int_param(description: str, default: Optional[int] = None) -> Dict[str, Any
 # ---------------------------------------------------------------------------
 
 ALL_SCHEMAS: List[ToolSchema] = [
+
+    ToolSchema(
+        name="declare_step",
+        description=(
+            "Announce the start or end of a logical work block before executing tools for it. "
+            "Call with status='running' when beginning a new goal. "
+            "Call with status='done' on success or status='failed' on error. "
+            "Mandatory for any task involving 2+ tool calls."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": _str_param("Short label, e.g. 'Creating backend', 'Running tests', 'Fixing bug'."),
+                "status": {
+                    "type": "string",
+                    "description": "Status: running (starting), done (finished ok), failed (error).",
+                },
+            },
+        },
+        required_params=["title"],
+    ),
 
     ToolSchema(
         name="web_search",

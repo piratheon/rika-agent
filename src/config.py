@@ -28,8 +28,7 @@ class Config(BaseModel):
     max_api_keys_per_user: int = 10
     max_context_messages: int = 10
     summarization_interval: int = 8
-    max_pinned_memories: int = 5
-    max_relevant_memories: int = 4     # sliding window — raw messages kept
+    # sliding window — raw messages kept
     summarization_interval: int = 8    # trigger incremental summary every N messages
     max_pinned_memories: int = 5       # hard cap on always-injected memories
     max_relevant_memories: int = 4     # semantic retrieval per call
@@ -71,6 +70,10 @@ class Config(BaseModel):
     max_concurrent_orchestrations_per_user: int = 2
     system_prompt: str = ""
     
+    # Per-provider tool schema limits
+    # Groq llama models fail with >8-10 function declarations
+    max_tools_groq: int = 8
+
     # Tool execution timeout in seconds
     tool_timeout_seconds: int = 10
 
@@ -90,6 +93,10 @@ class Config(BaseModel):
         "   Write temp files, scripts, and analysis artifacts there by default.\n"
         "7. COMMAND SECURITY: Destructive commands are blocked automatically.\n"
         "   Prefix medium-risk commands with 'CONFIRM: ' after warning the user.\n"
+        "8. NARRATION: Before starting any group of 2+ tool calls for a distinct goal,\n"
+        "   call declare_step(title=\"...\") first. After completion call\n"
+        "   declare_step(title=\"...\", status=\"done\") or status=\"failed\".\n"
+        "   Keep titles short and action-oriented: 'Creating backend', not 'I will now create...'\n"
     )
 
     def get_tools_prompt(self) -> str:
@@ -121,6 +128,23 @@ class Config(BaseModel):
             + "\n".join(tools)
             + "\n\nTo call a tool: TOOL: tool_name | QUERY: your query"
         )
+
+    def get_system_prompt_for_fc(self) -> str:
+        """System prompt stripped of text tool list for function-calling mode.
+
+        When sending tool schemas as JSON functions, the LLM already knows
+        all tools. The text "--- AVAILABLE TOOLS ---" block is redundant,
+        wastes tokens, and can make models output text-protocol calls instead
+        of JSON function calls.
+        """
+        import re as _re
+        stripped = _re.sub(
+            r"\n--- AVAILABLE TOOLS ---.*?(?=\n---|$)",
+            "",
+            self.system_prompt,
+            flags=_re.DOTALL,
+        )
+        return stripped.strip()
 
     @classmethod
     def load(cls, path: str = "config.json") -> "Config":

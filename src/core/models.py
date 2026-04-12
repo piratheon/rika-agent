@@ -94,3 +94,51 @@ class AgentState:
             "user_id": self.user_id,
             "chat_id": self.chat_id,
         }
+
+
+# ---------------------------------------------------------------------------
+# Event stream — typed session events consumed by all interfaces
+# ---------------------------------------------------------------------------
+
+import time as _time
+
+
+class EventType(Enum):
+    """All events the orchestration layer can emit."""
+    THINKING      = "thinking"       # agent is reasoning between tool calls
+    INTENT        = "intent"         # agent declared a step via declare_step tool
+    TOOL_CALL     = "tool_call"      # tool about to be executed
+    TOOL_RESULT   = "tool_result"    # tool returned a result
+    STEP_DONE     = "step_done"      # declare_step(status="done")
+    STEP_FAILED   = "step_failed"    # declare_step(status="failed")
+    MESSAGE       = "message"        # final or streaming text chunk
+    ERROR         = "error"          # unrecoverable error in orchestration
+    CANCELLED     = "cancelled"      # user cancelled the task
+    BUDGET        = "budget"         # token budget update
+
+
+@dataclass
+class SessionEvent:
+    """A single typed event emitted by the orchestration layer.
+
+    Interfaces subscribe to these events and render them differently:
+    - Telegram: collapses to a work log message, edits in place
+    - TUI: expands to a live panel with spinners
+    - Web (v3.0): streams over WebSocket
+
+    Attributes:
+        type:    The event category.
+        payload: Event-specific data dict. Keys vary by type:
+                   INTENT/STEP_*: {"title": str, "status": str}
+                   TOOL_CALL:     {"tool": str, "args": dict}
+                   TOOL_RESULT:   {"tool": str, "result": str, "success": bool}
+                   MESSAGE:       {"text": str, "final": bool}
+                   ERROR:         {"reason": str}
+                   BUDGET:        {"input": int, "output": int, "total": int}
+        turn:    Orchestration turn number this event belongs to.
+        ts:      Monotonic timestamp at creation.
+    """
+    type: EventType
+    payload: Dict[str, Any] = field(default_factory=dict)
+    turn: int = 0
+    ts: float = field(default_factory=_time.monotonic)

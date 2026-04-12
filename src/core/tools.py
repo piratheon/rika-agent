@@ -67,18 +67,27 @@ class ToolExecutor:
             return f"Skill saved: {k}"
 
         if tool_name == "get_memories":
-            from src.db.chat_store import get_pinned_memories, list_skill_names
-            # Return pinned + top-10 recent, not full dump
-            all_mems = []
+            from src.db.chat_store import (
+                get_pinned_memories, get_rika_memories, list_skill_names
+            )
             pinned = await get_pinned_memories(user_id)
-            for k, v in pinned.items():
-                all_mems.append({"key": k, "value": v, "pinned": True})
+            all_mems = await get_rika_memories(user_id, "memory")
+            # Merge: pinned first, then recents not already in pinned, cap at 10
+            merged = dict(pinned)
+            for k, v in all_mems.items():
+                if k not in merged and len(merged) < 10:
+                    merged[k] = v
             skills = list(await list_skill_names(user_id))
+            pinned_keys = set(pinned.keys())
+            lines = []
+            for k, v in merged.items():
+                tag = " [pinned]" if k in pinned_keys else ""
+                lines.append(f"  {k}{tag}: {v}")
+            mem_block = "\n".join(lines) if lines else "  (none)"
+            skill_block = ", ".join(skills) if skills else "none"
             return (
-                f"MEMORIES ({len(all_mems)} total):\n"
-                + str(all_mems)
-                + f"\n\nSKILL NAMES ({len(skills)}):\n"
-                + (", ".join(skills) if skills else "none")
+                f"MEMORIES ({len(merged)} shown, {len(all_mems)} total):\n{mem_block}\n\n"
+                f"SKILLS ({len(skills)}):\n  {skill_block}"
             )
 
         # Skill lazy-load — the key innovation
@@ -117,6 +126,29 @@ class ToolExecutor:
             path = arguments.get("path", "").strip()
             caption = arguments.get("caption", "")
             return f"__SEND_FILE__:{path}:{caption}"
+
+        # Narration tool — intercepted before registry; emits a SessionEvent
+        if tool_name == "declare_step":
+            from src.core.event_bus import emit as _emit
+            from src.core.models import EventType, SessionEvent
+            _session_id = getattr(self, "_current_session_id", 0)
+            status = arguments.get("status", "running")
+            etype = {
+                "running": EventType.INTENT,
+                "done":    EventType.STEP_DONE,
+                "failed":  EventType.STEP_FAILED,
+            }.get(status, EventType.INTENT)
+            import asyncio as _aio
+            try:
+                _aio.get_event_loop().create_task(
+                    _emit(_session_id, SessionEvent(
+                        etype,
+                        payload={"title": arguments.get("title", ""), "status": status},
+                    ))
+                )
+            except RuntimeError:
+                pass  # no running loop (e.g. in tests)
+            return ""
 
         # Registry tools
         tool_fn = self.registry.get(tool_name)

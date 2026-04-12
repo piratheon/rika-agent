@@ -20,7 +20,6 @@ from src.agents.base_agent import BaseAgent
 from src.config import Config
 from src.providers.base_provider import StructuredResponse, ToolCall
 from src.providers.provider_pool import get_pool
-from src.tools.registry import get_registry
 from src.utils.logger import logger
 
 MAX_TOOL_TURNS = 8
@@ -92,7 +91,7 @@ async def build_system_context(
 
 
 # ---------------------------------------------------------------------------
-# Tool executor
+# Tool executor — delegates to src.core.tools.ToolExecutor
 # ---------------------------------------------------------------------------
 
 async def execute_tool(
@@ -103,176 +102,22 @@ async def execute_tool(
     system_prompt: str = "",
     bubble=None,
 ) -> str:
-    """Execute a tool by name with structured arguments dict."""
-    from src.db.chat_store import (
-        get_rika_memories, save_rika_memory,
-        get_skill, list_skill_names, save_skill,
+    """Thin shim — delegates to ToolExecutor in src.core.tools.
+
+    Depth tracking for delegate_task recursion prevention is handled here
+    by temporarily patching the max depth check before delegating.
+    """
+    from src.core.tools import ToolExecutor
+    executor = ToolExecutor()
+    executor._current_depth = depth          # used by delegate_task guard
+    executor._current_system_prompt = system_prompt
+    executor._bubble = bubble
+    return await executor.execute(
+        tool_name=tool_name,
+        arguments=arguments,
+        user_id=user_id,
+        system_prompt=system_prompt,
     )
-
-    # Memory tools
-    if tool_name == "save_memory":
-        k = arguments.get("key", "")
-        v = arguments.get("value", "")
-        if not k:
-            return "Error: 'key' is required."
-        pinned = arguments.get("pinned", False)
-        await save_rika_memory(user_id, k, v, "memory", pinned=bool(pinned))
-        return f"Memory saved: {k}" + (" (pinned)" if pinned else "")
-
-    if tool_name == "save_skill":
-        k = arguments.get("name", "")
-        v = arguments.get("code", "")
-        if not k:
-            return "Error: 'name' is required."
-        await save_skill(user_id, k, v)
-        return f"Skill saved: {k}"
-
-    if tool_name == "get_memories":
-        # Return pinned + top-10 recent, not full dump
-        from src.db.chat_store import get_pinned_memories
-        pinned = await get_pinned_memories(user_id)
-        all_mems = await get_rika_memories(user_id, "memory")
-        # Show pinned first, then a sample of others
-        result = {}
-        result.update(pinned)
-        for k, v in all_mems.items():
-            if k not in result:
-                result[k] = v
-            if len(result) >= 20:
-                break
-        skills = list(await list_skill_names(user_id))
-        return (
-            f"MEMORIES ({len(all_mems)} total, showing {len(result)}):\n"
-            + json.dumps(result, indent=2)
-            + f"\n\nSKILL NAMES ({len(skills)}):\n"
-            + (", ".join(skills) if skills else "none")
-        )
-
-    # Skill lazy-load — the key innovation
-    if tool_name == "use_skill":
-        skill_name = arguments.get("skill_name", "").strip()
-        if not skill_name:
-            return "Error: 'skill_name' is required."
-        content = await get_skill(user_id, skill_name)
-        if content is None:
-            available = await list_skill_names(user_id)
-            return (
-                f"Skill '{skill_name}' not found.\n"
-                f"Available skills: {', '.join(available) if available else 'none'}"
-            )
-        return f"SKILL '{skill_name}':\n{content}"
-
-    # Delegation
-    if tool_name == "delegate_task":
-        if depth >= MAX_AGENT_DEPTH:
-            return f"Error: max depth ({MAX_AGENT_DEPTH}) reached."
-        query = arguments.get("query", "")
-        sub_spec = AgentSpec(
-            id="sub_research",
-            name="ResearchAgent",
-            role="Specialized researcher",
-            system_prompt=system_prompt,
-            tools=["web_search", "curl", "wikipedia_search", "run_shell_command"],
-        )
-        sub = ConcreteAgent(sub_spec, bubble=bubble, depth=depth + 1)
-        res = await sub.run({"user_id": user_id, "message": query, "full_context": query})
-        return res.get("output", "No result.")
-
-    # File send signal
-    if tool_name == "send_file":
-        path = arguments.get("path", "").strip()
-        caption = arguments.get("caption", "")
-        return f"__SEND_FILE__:{path}:{caption}"
-
-    # Registry tools
-    registry = get_registry()
-    tool_fn = registry.get(tool_name)
-    if tool_fn is None:
-        return f"Error: tool '{tool_name}' not found."
-
-    # Get timeout from config (only applies to tool execution, not reasoning)
-    cfg = Config.get()
-    tool_timeout = getattr(cfg, "tool_timeout_seconds", 10)
-
-    try:
-        # Execute tool with timeout (reasoning has no timeout)
-        if tool_name == "run_shell_command":
-            cmd = arguments.get("command") or arguments.get("query", "")
-            if not cmd:
-                return "Error: no command provided."
-            raw = await asyncio.wait_for(
-                tool_fn(cmd, user_id=user_id) if asyncio.iscoroutinefunction(tool_fn) else tool_fn(cmd, user_id=user_id),
-                timeout=tool_timeout
-            )
-        elif tool_name == "run_python":
-            code = arguments.get("code") or arguments.get("query", "")
-            if not code:
-                return "Error: no code provided."
-            timeout = min(arguments.get("timeout_seconds", 30), tool_timeout * 2)  # Allow longer for code execution
-            raw = await asyncio.wait_for(
-                tool_fn(code, timeout_seconds=int(timeout)) if asyncio.iscoroutinefunction(tool_fn) else tool_fn(code),
-                timeout=timeout + 5
-            )
-        elif tool_name == "watch_task_logs":
-            raw = await asyncio.wait_for(
-                tool_fn(arguments.get("file_path", ""), arguments.get("timeout", "30")),
-                timeout=tool_timeout
-            )
-        elif tool_name == "write_file":
-            raw = await asyncio.wait_for(
-                tool_fn(
-                    arguments.get("path", ""),
-                    arguments.get("content", ""),
-                    arguments.get("mode", "w"),
-                ),
-                timeout=tool_timeout
-            )
-        elif tool_name == "read_file":
-            raw = await asyncio.wait_for(
-                tool_fn(arguments.get("path", ""), arguments.get("max_lines", 200)),
-                timeout=tool_timeout
-            )
-        elif len(arguments) == 0:
-            raw = await asyncio.wait_for(
-                tool_fn("") if asyncio.iscoroutinefunction(tool_fn) else tool_fn(""),
-                timeout=tool_timeout
-            )
-        elif len(arguments) == 1:
-            val = next(iter(arguments.values()), "")
-            raw = await asyncio.wait_for(
-                tool_fn(str(val)) if asyncio.iscoroutinefunction(tool_fn) else tool_fn(str(val)),
-                timeout=tool_timeout
-            )
-        else:
-            kwargs = {k: str(v) for k, v in arguments.items()}
-            raw = await asyncio.wait_for(
-                tool_fn(**kwargs) if asyncio.iscoroutinefunction(tool_fn) else tool_fn(**kwargs),
-                timeout=tool_timeout
-            )
-
-        if isinstance(raw, dict):
-            if raw.get("blocked"):
-                return raw.get("message", "Command blocked by security policy.")
-            parts = []
-            if raw.get("stdout"):
-                parts.append(f"stdout:\n{raw['stdout']}")
-            if raw.get("stderr"):
-                parts.append(f"stderr:\n{raw['stderr']}")
-            if "exit_code" in raw:
-                parts.append(f"exit_code: {raw['exit_code']}")
-            if raw.get("cwd"):
-                parts.append(f"cwd: {raw['cwd']}")
-            if raw.get("error"):
-                parts.append(f"error: {raw['error']}")
-            return "\n".join(parts) or "Done."
-        return str(raw)
-
-    except asyncio.TimeoutError:
-        logger.error("tool_execution_timeout", tool=tool_name, timeout=tool_timeout)
-        return f"Error: Tool '{tool_name}' timed out after {tool_timeout} seconds. For long-running tasks, use /watch to schedule as a background task."
-    except Exception as exc:
-        logger.error("tool_execution_failed", tool=tool_name, error=str(exc))
-        return f"Error executing {tool_name}: {exc}"
 
 
 # ---------------------------------------------------------------------------
@@ -318,11 +163,7 @@ class ConcreteAgent(BaseAgent):
         skill_names = await list_skill_names(user_id)
         for s in schemas:
             if s.name == "use_skill" and skill_names:
-                s = s  # mutable dataclass — update description
-                object.__setattr__(
-                    s, "description",
-                    s.description + f" Available: {', '.join(skill_names[:20])}"
-                )
+                s.description = s.description + f" Available: {', '.join(skill_names[:20])}"
         return schemas
 
     async def _request_structured(

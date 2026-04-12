@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 
 from src.utils.logger import logger
 
+_VECTOR_DISABLED = False  # True after first ONNX/fastembed failure
+
 try:
     from qdrant_client import QdrantClient
     from qdrant_client.http import models as qdrant_models
@@ -35,7 +37,8 @@ class VectorStore:
         return cls._instance
 
     def _ensure_collection(self) -> None:
-        if self.client is None:
+        global _VECTOR_DISABLED
+        if self.client is None or _VECTOR_DISABLED:
             return
         try:
             self.client.get_collection(self.collection_name)
@@ -69,7 +72,13 @@ class VectorStore:
                 ),
             )
         except Exception as exc:
-            logger.error("vector_add_failed", error=str(exc))
+            if any(x in str(exc) for x in ("NO_SUCH", "onnx", "model_optimized", "fastembed")):
+                global _VECTOR_DISABLED
+                if not _VECTOR_DISABLED:
+                    _VECTOR_DISABLED = True
+                    logger.warning("vector_store_disabled", reason="ONNX model missing — pip install fastembed")
+            else:
+                logger.error("vector_add_failed", error=str(exc))
 
     async def search_memories(
         self, user_id: int, query: str, limit: int = 5
@@ -99,7 +108,13 @@ class VectorStore:
                 for r in results
             ]
         except Exception as exc:
-            logger.error("vector_search_failed", error=str(exc))
+            if any(x in str(exc) for x in ("NO_SUCH", "onnx", "model_optimized", "fastembed")):
+                global _VECTOR_DISABLED
+                if not _VECTOR_DISABLED:
+                    _VECTOR_DISABLED = True
+                    logger.warning("vector_store_disabled", reason="ONNX model missing")
+            else:
+                logger.error("vector_search_failed", error=str(exc))
             return []
 
 

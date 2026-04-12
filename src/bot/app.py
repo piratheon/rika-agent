@@ -932,7 +932,14 @@ async def _handle_direct_reply(
         return
 
     # If LLM spontaneously tried to use a tool in "simple" mode, re-route
-    if re.search(r"TOOL:\s*\w+", reply, re.IGNORECASE):
+    # Detect any text-protocol tool invocation the LLM may have output
+    _TOOL_PROTO_RE = re.compile(
+        r"(?:TOOL:|WEB_SEARCH:|WIKIPEDIA_SEARCH:|RUN_PYTHON:|RUN_SHELL_COMMAND:"
+        r"|CURL:|LIST_WORKSPACE:|READ_FILE:|WRITE_FILE:|SAVE_MEMORY:"
+        r"|GET_MEMORIES:|SAVE_SKILL:|USE_SKILL:|DELEGATE_TASK:|SEND_FILE:)",
+        re.IGNORECASE,
+    )
+    if _TOOL_PROTO_RE.search(reply):
         logger.info("direct_reply_reroute_to_orchestration")
         sent = await update.message.reply_text(f"{_agent_name(cfg)} is processing...")
         sem = _get_semaphore(user_id)
@@ -1126,9 +1133,10 @@ async def run_orchestration_background(
                     continue
 
             if not resp:
-                if last_error:
-                    await flush(f"All providers failed: {last_error}")
-                break
+                msg = f"All providers failed. {last_error}" if last_error else "All providers unavailable. Check /status."
+                await bubble.stop()
+                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=msg)
+                return
             
             # Handle tool calls from JSON response
             if resp.has_tool_calls:
@@ -1185,7 +1193,8 @@ async def run_orchestration_background(
                     full_text = full_text.split(marker)[0].strip()
 
             findings_block = ""
-            if agent_results:
+            cfg_debug = getattr(cfg, "log_level", "info").lower() == "debug"
+            if agent_results and cfg_debug:
                 findings_block = "\n\n<b>Process log:</b>\n"
                 for aid, res in agent_results.items():
                     tool = res.get("tool_used", "analysis")

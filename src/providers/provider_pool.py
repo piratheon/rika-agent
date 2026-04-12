@@ -4,10 +4,12 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set
 
 from src.db import key_store
 from src.providers.base_provider import ProviderAuthError, ProviderQuotaError, ProviderTransientError
+# imported lazily inside methods to avoid circular import:
+#   from src.providers.groq_provider import GroqToolUseFailedError
 from src.utils.logger import logger
 
 _VIRTUAL_KEY_USAGE: Dict[str, datetime] = {}
@@ -23,8 +25,15 @@ def get_pool() -> "ProviderPool":
     return _pool_instance
 
 class ProviderPool:
+    # Per-provider tool count caps. Groq's llama models fail with >8-10 tools.
+    _TOOL_CAPS: Dict[str, int] = {
+        "groq": 6,
+    }
+
     def __init__(self) -> None:
         self._locks: Dict[tuple, asyncio.Lock] = {}
+        self._working_caps: Dict[str, int] = {}
+        self._logged_env_check: Set[int] = set()
 
     def _get_lock(self, user_id: int, provider: str) -> asyncio.Lock:
         key = (user_id, self._normalize(provider))
@@ -34,13 +43,6 @@ class ProviderPool:
 
     async def request_with_key(self, user_id: int, provider: str, payload: dict) -> dict:
         logger.info("provider_pool_request_start", user_id=user_id, provider=provider)
-        
-        # Debug: log available env vars
-        if user_id not in self._logged_env_check:
-            self._logged_env_check.add(user_id)
-            for var in ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY"]:
-                val = os.environ.get(var, "")
-                logger.info("provider_pool_env_check", var=var, has_value=bool(val.strip()), value_prefix=val[:8] if val else None)
         
         # Try the requested provider first
         try:
@@ -58,8 +60,6 @@ class ProviderPool:
             
             # All providers failed
             raise RuntimeError(f"All providers failed. Last error: {str(exc)}")
-    
-    _logged_env_check: Set[int] = set()
     
     def _is_g4f_enabled(self) -> bool:
         """Check if G4F is enabled in config."""
@@ -112,7 +112,7 @@ class ProviderPool:
                 raise RuntimeError(f"No {provider} API key found. Add one with /addkey {provider}:\"key\"")
 
             api_key: str = k["raw_key"]
-            logger.info("provider_pool_got_key", user_id=user_id, provider=norm, key_prefix=api_key[:8] if api_key else None)
+            logger.info("provider_pool_got_key", user_id=user_id, provider=norm)
             adapter = self._make_adapter(norm, api_key)
 
             try:
@@ -225,22 +225,81 @@ class ProviderPool:
 
     async def request_with_key_structured(self, user_id: int, provider: str,
                                            payload: dict, tool_schemas: list) -> "StructuredResponse":
-        """Like request_with_key but returns a StructuredResponse for function calling."""
-        from src.providers.base_provider import StructuredResponse
+        """Like request_with_key but returns a StructuredResponse for function calling.
+
+        Has the same key rotation and blacklisting logic as request_with_key.
+        Additionally handles GroqToolUseFailedError by retrying with fewer tools
+        instead of burning the key (the key is valid — the schema was too large).
+        """
+        from src.providers.base_provider import ProviderAuthError, ProviderQuotaError, StructuredResponse
+        from src.providers.groq_provider import GroqToolUseFailedError
         norm = self._normalize(provider)
         if norm in _KEYLESS_PROVIDERS:
             adapter = self._make_adapter(norm, "")
             return await adapter.request_with_tools(payload, tool_schemas)
-        k = await self._select_key(user_id, norm)
-        if k is None:
-            raise RuntimeError(f"No key for {provider}")
-        adapter = self._make_adapter(norm, k["raw_key"])
-        try:
-            resp = await adapter.request_with_tools(payload, tool_schemas)
-            await self._record_usage(k)
-            return resp
-        except Exception:
-            raise
+
+        tried: Set[str] = set()
+        tool_use_failures = 0
+        active_schemas = self._cap_tools(norm, tool_schemas)
+
+        for _attempt in range(5):
+            k = await self._select_key(user_id, norm, exclude=tried)
+            if k is None:
+                raise RuntimeError(
+                    f"No {provider} API key available. "
+                    f"Add one with /addkey {provider}:\"key\""
+                )
+            adapter = self._make_adapter(norm, k["raw_key"])
+            try:
+                resp = await adapter.request_with_tools(payload, active_schemas)
+                await self._record_usage(k)
+                if norm in self._TOOL_CAPS:
+                    self._working_caps[norm] = len(active_schemas)
+                return resp
+            except GroqToolUseFailedError:
+                tool_use_failures += 1
+                logger.warning(
+                    "structured_tool_use_failed",
+                    provider=norm,
+                    attempt=tool_use_failures,
+                    schemas_before=len(active_schemas),
+                )
+                if tool_use_failures >= 2:
+                    raise RuntimeError(
+                        f"{provider} tool_use_failed after {tool_use_failures} retries"
+                    )
+                active_schemas = self._cap_tools(norm, active_schemas, reduced=True)
+                await asyncio.sleep(0.5)
+                continue
+            except ProviderAuthError as exc:
+                logger.error("structured_auth_failed", provider=norm, key_id=k["id"], error=str(exc))
+                if k["id"] >= 0:
+                    await key_store.blacklist_key(k["id"], reason="auth_failed")
+                tried.add(k["raw_key"])
+            except ProviderQuotaError as exc:
+                err_lower = str(exc).lower()
+                is_tpm = any(x in err_lower for x in ["tpm", "tokens per minute", "rpm", "requests per minute"])
+                if is_tpm:
+                    # TPM/RPM resets in seconds — sleep briefly and retry the SAME key
+                    wait = 15
+                    logger.warning("structured_tpm_limit", provider=norm, key_id=k["id"],
+                                   wait_seconds=wait, error=str(exc)[:120])
+                    await asyncio.sleep(wait)
+                    # Do NOT add to tried — key is still valid
+                else:
+                    logger.warning("structured_quota_exceeded", provider=norm, key_id=k["id"], error=str(exc)[:120])
+                    if k["id"] >= 0:
+                        await key_store.blacklist_key(
+                            k["id"], reason="quota_exceeded",
+                            quota_resets_at=self._estimate_reset(norm),
+                        )
+                    tried.add(k["raw_key"])
+            except Exception as exc:
+                logger.warning("structured_transient_error", provider=norm, error=str(exc))
+                tried.add(k["raw_key"])
+                await asyncio.sleep(1)
+
+        raise RuntimeError(f"All {provider} keys exhausted for structured request.")
 
     async def _select_key(self, user_id: int, provider: str, exclude: Optional[Set[str]] = None) -> Optional[dict]:
         exclude = exclude or set()
@@ -319,6 +378,34 @@ class ProviderPool:
     def _normalize(self, name: str) -> str:
         n = (name or "").lower().strip()
         return "gemini" if n in ("google", "gemini") else n
+
+    def _cap_tools(self, provider: str, tool_schemas: list, reduced: bool = False) -> list:
+        """Enforce per-provider tool count cap.
+
+        Args:
+            reduced: If True, halve the cap (used on tool_use_failed retry).
+        """
+        cap = self._TOOL_CAPS.get(provider)
+        if cap is None:
+            return tool_schemas
+        working = self._working_caps.get(provider, cap)
+        effective_base = min(cap, working)
+        effective = effective_base // 2 if reduced else effective_base
+        if len(tool_schemas) <= effective:
+            return tool_schemas
+        logger.info(
+            "provider_pool_tool_cap_applied",
+            provider=provider,
+            original=len(tool_schemas),
+            capped=effective,
+        )
+        # Prefer keeping declare_step first, then the most broadly useful tools
+        priority = ["declare_step", "web_search", "run_shell_command", "run_python",
+                    "curl", "read_file", "write_file", "delegate_task"]
+        schema_map = {s.name: s for s in tool_schemas if hasattr(s, 'name')}
+        ordered = [schema_map[n] for n in priority if n in schema_map]
+        remaining = [s for s in tool_schemas if s not in ordered]
+        return (ordered + remaining)[:effective]
 
     def _make_adapter(self, provider: str, api_key: str):
         norm = self._normalize(provider)

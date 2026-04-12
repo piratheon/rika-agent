@@ -25,3 +25,5 @@ __all__ = [
     "ToolResult",
     "classify_complexity",
 ]
+from src.core.event_bus import emit, get_bus, subscribe, teardown as teardown_session
+from src.core.models import EventType, SessionEvent

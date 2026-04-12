@@ -18,6 +18,8 @@ from src.core.tools import ToolExecutor
 from src.providers.provider_pool import get_pool
 from src.tools.schemas import get_all_schemas
 from src.utils.logger import logger
+from src.core.event_bus import emit as _emit_event
+from src.core.models import EventType, SessionEvent
 
 
 class Orchestrator:
@@ -125,6 +127,9 @@ class Orchestrator:
                 
                 state.turn_count = turn + 1
                 await self._notify_status(state)
+                await _emit_event(chat_id, SessionEvent(
+                    EventType.THINKING, turn=turn
+                ))
                 
                 # Get response from provider
                 resp = await self._get_provider_response(
@@ -155,6 +160,11 @@ class Orchestrator:
                         )
                         await self._notify_status(state)
                         await self._notify_tool_call(state.current_tool)
+                        await _emit_event(chat_id, SessionEvent(
+                            EventType.TOOL_CALL,
+                            payload={"tool": tool_call.name, "args": tool_call.arguments},
+                            turn=turn,
+                        ))
                         
                         result = await self.tool_executor.execute(
                             tool_name=tool_call.name,
@@ -169,6 +179,15 @@ class Orchestrator:
                             call_id=tool_call.call_id,
                         )
                         await self._notify_tool_result(tool_result)
+                        await _emit_event(chat_id, SessionEvent(
+                            EventType.TOOL_RESULT,
+                            payload={
+                                "tool": tool_call.name,
+                                "result": result[:300],
+                                "success": not result.startswith("Error"),
+                            },
+                            turn=turn,
+                        ))
                         
                         # Add to history
                         thought_history.append({
@@ -228,6 +247,11 @@ class Orchestrator:
                 full_response = full_text + findings_block
                 
                 # Notify interface
+                await _emit_event(chat_id, SessionEvent(
+                    EventType.MESSAGE,
+                    payload={"text": full_response, "final": True},
+                    turn=turn,
+                ))
                 if self.on_message:
                     await self.on_message(full_response, agent_results)
                 
