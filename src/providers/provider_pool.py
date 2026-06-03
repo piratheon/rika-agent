@@ -315,6 +315,11 @@ class ProviderPool:
         # Special case for gemini/google
         if norm_p == "gemini":
             env_variants.append("GOOGLE_API_KEY")
+        # Vercel deployments expose VERCEL_API_KEY
+        if norm_p == "nvidia":
+            env_variants.append("NVIDIA_API_KEY")
+        if norm_p == "vercel":
+            env_variants.append("VERCEL_API_KEY")
         
         for env_var in env_variants:
             env_str = os.environ.get(env_var, "")
@@ -424,6 +429,15 @@ class ProviderPool:
         if norm == "g4f":
             from src.providers.g4f_provider import G4FProvider
             return G4FProvider()
+        if norm == "nvidia":
+            from src.providers.nvidia_provider import NvidiaProvider
+            return NvidiaProvider(api_key)
+        if norm == "nvidia":
+            from src.providers.nvidia_provider import NvidiaProvider
+            return NvidiaProvider(api_key)
+        if norm == "vercel":
+            from src.providers.vercel_provider import VercelProvider
+            return VercelProvider(api_key)
         from src.providers.openrouter_provider import OpenRouterProvider
         return OpenRouterProvider(api_key)
 
@@ -433,7 +447,7 @@ class ProviderPool:
         db_keys = await key_store.list_api_keys(user_id)
         
         # Check common providers
-        for provider in ["gemini", "groq", "openrouter", "ollama", "g4f"]:
+        for provider in ["gemini", "groq", "openrouter", "ollama", "g4f", "vercel", "nvidia"]:
             # Check env keys
             env_key = os.environ.get(f"{provider.upper()}_API_KEY", "")
             if env_key.strip():

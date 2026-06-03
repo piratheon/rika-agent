@@ -11,7 +11,17 @@ Changes vs v1:
 - Streaming path wired through LiveBubble for direct replies.
 - Core logic extracted to src.core for reuse across interfaces.
 """
+
 from __future__ import annotations
+
+print("""
+ ██████╗ ██╗██╗  ██╗ █████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗
+ ██╔══██╗██║██║ ██╔╝██╔══██╗     ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝
+ ██████╔╝██║█████╔╝ ███████║     ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   
+ ██╔══██╗██║██╔═██╗ ██╔══██║     ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   
+ ██║  ██║██║██║  ██╗██║  ██║     ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   
+ ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚═╝  ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   
+""")
 
 import asyncio
 import json
@@ -59,6 +69,8 @@ _USER_SEMAPHORES: Dict[int, asyncio.Semaphore] = {}
 # Active task tracking — for stop button
 _ACTIVE_TASKS: Dict[int, asyncio.Task] = {}  # user_id → task
 _CANCEL_FLAGS: Dict[int, bool] = {}  # user_id → cancel flag
+_RETRY_EVENTS: Dict[int, asyncio.Event] = {}  # set when user clicks Retry now
+_STOP_EVENTS:  Dict[int, asyncio.Event] = {}  # set when user clicks Stop during countdown
 
 def _get_semaphore(user_id: int) -> asyncio.Semaphore:
     cfg = Config.get()
@@ -100,6 +112,49 @@ def _extract_response_text(resp: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+def _is_fatal_provider_error(err_str: str) -> bool:
+    """Return True for errors that should skip to the next provider immediately."""
+    e = err_str.lower()
+    return (
+        "429" in e
+        or "quota" in e
+        or "exhausted" in e
+        or "rate limit" in e
+        or "401" in e
+        or "unauthorized" in e
+        or "invalid api key" in e
+    )
+
+
+def _is_retryable_provider_error(exc: Exception | None, err_str: str) -> bool:
+    """Return True for transient errors worth retrying (timeout, 403, network)."""
+    if isinstance(exc, asyncio.TimeoutError):
+        return True
+    e = err_str.lower()
+    return (
+        "403" in e
+        or "access denied" in e
+        or "network" in e
+        or "timed out" in e
+        or "timeout" in e
+        or "connection" in e
+    )
+
+
+def _is_fatal_provider_error(err_str: str) -> bool:
+    """Return True for errors that should skip to the next provider immediately."""
+    e = err_str.lower()
+    return (
+        "429" in e
+        or "quota" in e
+        or "exhausted" in e
+        or "rate limit" in e
+        or "401" in e
+        or "unauthorized" in e
+        or "invalid api key" in e
+    )
+
+
 # /start
 # ---------------------------------------------------------------------------
 
@@ -641,6 +696,24 @@ async def broadcast_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    data  = query.data or ""
+
+    # ── stop_task:<user_id> ──────────────────────────────────────────────────
+    if data.startswith("stop_task:"):
+        await stop_task_handler(update, context)
+        return
+
+    # ── retry_now:<user_id> ─────────────────────────────────────────────────
+    if data.startswith("retry_now:"):
+        try:
+            uid = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            uid = query.from_user.id
+        if uid in _RETRY_EVENTS:
+            _RETRY_EVENTS[uid].set()
+        await query.answer("Retrying now…")
+        return
+
     await query.answer()
     from src.db.key_store import delete_user_by_telegram_id
     cfg = Config.get()
@@ -662,23 +735,32 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 # ---------------------------------------------------------------------------
 
 async def stop_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle stop button click — cancels current task for user."""
+    """Handle stop button click — cancels active task or countdown."""
     query = update.callback_query
     user_id = query.from_user.id
-    
-    # Set cancel flag
+
     _CANCEL_FLAGS[user_id] = True
-    
-    # Cancel the active task
-    if user_id in _ACTIVE_TASKS:
-        task = _ACTIVE_TASKS[user_id]
-        if not task.done():
-            task.cancel()
-            await query.answer("Stopping task...")
-            logger.info("task_cancelled_by_user", user_id=user_id)
-            return
-    
-    await query.answer("No active task to stop.")
+
+    # Signal countdown to stop (if waiting between retries)
+    if user_id in _STOP_EVENTS:
+        _STOP_EVENTS[user_id].set()
+
+    # Cancel the active asyncio task
+    task = _ACTIVE_TASKS.get(user_id)
+    if task and not task.done():
+        task.cancel()
+        await query.answer("Stopping…")
+        try:
+            await query.edit_message_text(
+                f"⏹ Task stopped by user.",
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+        logger.info("task_cancelled_by_user", user_id=user_id)
+        return
+
+    await query.answer("No active task.")
 
 
 # ---------------------------------------------------------------------------
@@ -686,21 +768,21 @@ async def stop_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 # ---------------------------------------------------------------------------
 
 async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /stop command — cancels current task for user."""
+    """Handle /stop command — cancels active task or countdown."""
     user_id = update.effective_user.id
-    
-    # Set cancel flag
+
     _CANCEL_FLAGS[user_id] = True
-    
-    # Cancel the active task
-    if user_id in _ACTIVE_TASKS:
-        task = _ACTIVE_TASKS[user_id]
-        if not task.done():
-            task.cancel()
-            logger.info("task_cancelled_by_command", user_id=user_id)
-            await update.message.reply_text("✅ Task stopped.")
-            return
-    
+
+    if user_id in _STOP_EVENTS:
+        _STOP_EVENTS[user_id].set()
+
+    task = _ACTIVE_TASKS.get(user_id)
+    if task and not task.done():
+        task.cancel()
+        logger.info("task_cancelled_by_command", user_id=user_id)
+        await update.message.reply_text("⏹ Task stopped.")
+        return
+
     await update.message.reply_text("No active task to stop.")
 
 
@@ -841,8 +923,10 @@ async def _process_message(
         )
         sem = _get_semaphore(user_id)
         
-        # Clear cancel flag for new task
+        # Clear cancel/retry/stop state for fresh task
         _CANCEL_FLAGS[user_id] = False
+        _RETRY_EVENTS[user_id] = asyncio.Event()
+        _STOP_EVENTS[user_id]  = asyncio.Event()
         
         # Create and track task
         task = asyncio.create_task(
@@ -914,12 +998,47 @@ async def _handle_direct_reply(
                 logger.info("direct_reply_got_response", provider=p, reply_len=len(reply), first_50=reply[:50])
                 break
         except asyncio.TimeoutError:
-            logger.error("direct_reply_provider_timeout", provider=p, timeout=60)
             last_error = f"Provider {p} timed out"
+            logger.warning("direct_reply_timeout", provider=p)
+            _dr_retries = getattr(cfg, "provider_max_retries", 2)
+            _dr_delay   = getattr(cfg, "provider_retry_delay", 2.0)
+            for _r in range(_dr_retries):
+                await asyncio.sleep(_dr_delay * (2 ** _r))
+                try:
+                    resp = await asyncio.wait_for(
+                        pool.request_with_key(user_id, p, payload),
+                        timeout=60.0,
+                    )
+                    reply = resp.get("output", "").strip()
+                    if reply:
+                        break
+                except Exception:
+                    pass
+            if reply:
+                break
             continue
         except Exception as exc:
-            logger.exception("direct_reply_provider_failed", provider=p, error=str(exc))
             last_error = str(exc)
+            if _is_retryable_provider_error(exc, last_error):
+                _dr_retries = getattr(cfg, "provider_max_retries", 2)
+                _dr_delay   = getattr(cfg, "provider_retry_delay", 2.0)
+                logger.warning("direct_reply_transient", provider=p, error=last_error)
+                for _r in range(_dr_retries):
+                    await asyncio.sleep(_dr_delay * (2 ** _r))
+                    try:
+                        resp = await asyncio.wait_for(
+                            pool.request_with_key(user_id, p, payload),
+                            timeout=60.0,
+                        )
+                        reply = resp.get("output", "").strip()
+                        if reply:
+                            break
+                    except Exception:
+                        pass
+                if reply:
+                    break
+            else:
+                logger.warning("direct_reply_provider_failed", provider=p, error=last_error)
             continue
     
     if not reply:
@@ -1026,6 +1145,100 @@ async def _handle_key_submission(update, context, user_id, keys, cfg) -> None:
 # Orchestration background loop
 # ---------------------------------------------------------------------------
 
+
+
+_CORRECTION_WARNING = (
+    "[SYSTEM — DO NOT REPEAT THIS TO THE USER]\n"
+    "You produced text output without a tool call. This is not allowed.\n"
+    "You MUST respond with a tool call. Either:\n"
+    '  1. end_thinking(message=\"...\") to deliver your final answer\n'
+    "  2. Any other tool to continue processing\n\n"
+    "Your unsent text (copy into end_thinking if it is your final answer):\n"
+)
+
+
+
+async def _show_retry_countdown(
+    bot,
+    chat_id: int,
+    message_id: int,
+    user_id: int,
+    wait_seconds: int = 30,
+    attempt: int = 1,
+) -> str:
+    """
+    Replace the bubble message with a live countdown and Stop / Retry-now buttons.
+    Returns: "stop" | "retry" | "done"  (done = countdown expired naturally)
+    """
+    retry_event = asyncio.Event()
+    stop_event  = asyncio.Event()
+    _RETRY_EVENTS[user_id] = retry_event
+    _STOP_EVENTS[user_id]  = stop_event
+
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("⏹ Stop",      callback_data=f"stop_task:{user_id}"),
+        InlineKeyboardButton("↩ Retry now", callback_data=f"retry_now:{user_id}"),
+    ]])
+
+    note = ""
+    if attempt > 1:
+        note = (
+            "\n\n<i>All providers seem to be over quota. "
+            "Consider adding fresh keys with /addkey.</i>"
+        )
+
+    async def _edit(remaining: int) -> None:
+        bar_done  = wait_seconds - remaining
+        bar_total = wait_seconds
+        filled = "█" * bar_done + "░" * (bar_total - bar_done)
+        txt = (
+            f"⏳ <b>Rate limit reached</b> — retrying in <b>{remaining}s</b>\n"
+            f"<code>{filled}</code>"
+            f"{note}"
+        )
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=txt,
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+        except Exception:
+            pass
+
+    await _edit(wait_seconds)
+
+    for remaining in range(wait_seconds - 1, -1, -1):
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(
+                    asyncio.gather(
+                        _wait_event(retry_event),
+                        _wait_event(stop_event),
+                        return_exceptions=True,
+                    )
+                ),
+                timeout=1.0,
+            )
+        except asyncio.TimeoutError:
+            pass
+
+        if stop_event.is_set():
+            return "stop"
+        if retry_event.is_set():
+            return "retry"
+
+        await _edit(remaining)
+
+    return "done"
+
+
+async def _wait_event(event: asyncio.Event) -> None:
+    """Await an asyncio.Event (helper for gather)."""
+    await event.wait()
+
+
 async def run_orchestration_background(
     bot, chat_id: int, message_id: int, user_id: int,
     context_str: str, original_text: str, history: list, summary: Optional[str],
@@ -1070,15 +1283,25 @@ async def run_orchestration_background(
     agent_results: dict = {}
     narrative_chunks: list = []
     priorities = cfg.default_provider_priority or ["gemini", "groq", "openrouter"]
+    _final_message: str | None = None
+    _no_tool_corr: int = 0
+    _provider_retry: int = 0   # how many times all providers have failed
+
+    max_turns = getattr(cfg, "max_turns", 20)
+    turn = 0
 
     try:
-        for turn in range(10):
+        while turn < max_turns:
             # Check cancel flag
-            if _CANCEL_FLAGS.get(user_id, False):
-                await flush(f"{_agent_name(cfg)} task stopped by user.")
-                _CANCEL_FLAGS[user_id] = False  # Reset flag
+            if _CANCEL_FLAGS.get(user_id, False) or _STOP_EVENTS.get(user_id, asyncio.Event()).is_set():
+                _CANCEL_FLAGS[user_id] = False
+                await bubble.stop()
+                await bot.edit_message_text(
+                    chat_id=chat_id, message_id=message_id,
+                    text=f"⏹ {_agent_name(cfg)} task stopped.", reply_markup=None,
+                )
                 return
-            
+
             bubble.update("Thinking", f"turn {turn + 1}...")
             
             # Get tool schemas for JSON function calling
@@ -1112,31 +1335,74 @@ async def run_orchestration_background(
                     "messages": thought_history,
                 }
                 
-                try:
-                    # Use structured function calling with JSON schemas
-                    resp = await asyncio.wait_for(
-                        pool.request_with_key_structured(user_id, p_name, payload, openai_schemas),
-                        timeout=60.0
-                    )
-                    # Check if LLM returned tool calls
-                    if resp.has_tool_calls:
+                _max_retries = getattr(cfg, "provider_max_retries", 2)
+                _base_delay  = getattr(cfg, "provider_retry_delay", 2.0)
+                for _attempt in range(_max_retries + 1):
+                    try:
+                        resp = await asyncio.wait_for(
+                            pool.request_with_key_structured(user_id, p_name, payload, openai_schemas),
+                            timeout=60.0,
+                        )
+                        if resp.has_tool_calls or resp.content:
+                            break
+                    except asyncio.TimeoutError as _exc:
+                        last_error = f"Provider {p_name} timed out"
+                        logger.warning(
+                            "orchestration_provider_timeout",
+                            provider=p_name,
+                            attempt=_attempt + 1,
+                            timeout=60,
+                        )
+                        if _attempt < _max_retries:
+                            await asyncio.sleep(_base_delay * (2 ** _attempt))
+                            continue
+                        resp = None
                         break
-                    elif resp.content:
+                    except Exception as _exc:
+                        last_error = str(_exc)
+                        if _is_fatal_provider_error(last_error):
+                            logger.warning(
+                                "orchestration_provider_failed",
+                                provider=p_name,
+                                error=last_error,
+                            )
+                            resp = None
+                            break
+                        logger.warning(
+                            "orchestration_provider_transient",
+                            provider=p_name,
+                            attempt=_attempt + 1,
+                            error=last_error,
+                        )
+                        if _attempt < _max_retries:
+                            await asyncio.sleep(_base_delay * (2 ** _attempt))
+                            continue
+                        resp = None
                         break
-                except asyncio.TimeoutError:
-                    logger.warning("orchestration_provider_timeout", provider=p_name, timeout=60)
-                    last_error = f"Provider {p_name} timed out"
-                    continue
-                except Exception as exc:
-                    logger.warning("orchestration_provider_failed", provider=p_name, error=str(exc))
-                    last_error = str(exc)
-                    continue
+                if resp and (resp.has_tool_calls or resp.content):
+                    break
 
             if not resp:
-                msg = f"All providers failed. {last_error}" if last_error else "All providers unavailable. Check /status."
+                # All providers failed — show countdown, then retry the same turn
+                _provider_retry += 1
+                logger.warning(
+                    "all_providers_failed_retrying",
+                    turn=turn,
+                    retry=_provider_retry,
+                    last_error=last_error,
+                )
                 await bubble.stop()
-                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=msg)
-                return
+                action = await _show_retry_countdown(
+                    bot, chat_id, message_id, user_id,
+                    wait_seconds=30, attempt=_provider_retry,
+                )
+                if action == "stop":
+                    _CANCEL_FLAGS[user_id] = False
+                    return
+                # Restart the bubble and retry this turn (don't increment turn)
+                await bubble.start(flush)
+                bubble.update("Thinking", f"turn {turn + 1} (retry {_provider_retry})...")
+                continue  # while loop — same turn value
             
             # Handle tool calls from JSON response
             if resp.has_tool_calls:
@@ -1164,22 +1430,73 @@ async def run_orchestration_background(
                         if file_path:
                             sent = await _send_agent_file(bot, chat_id, cfg.workspace_path, file_path, file_caption)
                             tool_result = f"File sent: {file_path}" if sent else f"Failed to send file: {file_path}"
-                    
+
+                    # end_thinking sentinel — extract final message, exit both loops
+                    if tool_result.startswith("__END_THINKING__:"):
+                        _final_message = tool_result[len("__END_THINKING__:"):]
+                        thought_history.append({
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [{
+                                "id": tool_call.call_id,
+                                "type": "function",
+                                "function": {"name": t_name, "arguments": json.dumps(t_args)},
+                            }],
+                        })
+                        thought_history.append({
+                            "role": "tool",
+                            "content": "[end_thinking acknowledged]",
+                            "tool_call_id": tool_call.call_id,
+                        })
+                        logger.info("end_thinking_received", preview=_final_message[:80])
+                        break  # break inner tool loop
+
                     thought_history.append({"role": "assistant", "content": None, "tool_calls": [{"id": tool_call.call_id, "type": "function", "function": {"name": t_name, "arguments": json.dumps(t_args)}}]})
                     thought_history.append({"role": "tool", "content": tool_result, "tool_call_id": tool_call.call_id})
-                    agent_results[f"turn_{turn}"] = {"output": tool_result, "tool_used": t_name}
-                continue  # Continue to next turn with tool results in history
-            
-            # No tool calls - LLM returned final content
-            output = resp.content
+                    if f"turn_{turn}" not in agent_results:
+                        agent_results[f"turn_{turn}"] = []
+                    agent_results[f"turn_{turn}"].append({"output": tool_result, "tool_used": t_name})
 
-            # Final response turn - no tool calls
-            bubble.update("Thinking", "done")
-            await bubble.stop()
+                # end_thinking was called — exit turn loop cleanly
+                if _final_message is not None:
+                    break
 
-            final = re.sub(r"TOOL:\s*[\w_]+\s*\|?\s*QUERY:.*", "", output, flags=re.IGNORECASE | re.DOTALL).strip()
-            if final:
-                narrative_chunks.append(final)
+                turn += 1  # advance to next turn
+                continue  # while loop
+
+            # No tool call — LLM produced raw text. Inject correction warning.
+            _no_tool_corr += 1
+            logger.warning(
+                "orchestration_no_tool_call",
+                turn=turn,
+                correction=_no_tool_corr,
+                preview=(resp.content or "")[:80],
+            )
+            if _no_tool_corr > 3:
+                logger.warning("orchestration_correction_limit_reached", turn=turn)
+                _final_message = (resp.content or "").strip() or "Task complete."
+                break
+            thought_history.append({
+                "role": "user",
+                "content": _CORRECTION_WARNING + (resp.content or ""),
+            })
+            # Do NOT increment turn — retry same turn with correction injected
+            continue  # while loop
+
+        # ---- Post-loop: render final message ----
+        if _final_message is None:
+            _final_message = (resp.content or "").strip() if resp else ""
+            if not _final_message:
+                _final_message = "Task complete."
+            logger.warning("orchestration_max_turns_no_end_thinking")
+
+        output = _final_message
+        bubble.update("Thinking", "done")
+        await bubble.stop()
+
+        final = re.sub(r"TOOL:\s*[\w_]+\s*\|?\s*QUERY:.*", "", output, flags=re.IGNORECASE | re.DOTALL).strip()
+        if final:
+            narrative_chunks.append(final)
 
             unique = []
             for c in narrative_chunks:
@@ -1197,6 +1514,8 @@ async def run_orchestration_background(
             if agent_results and cfg_debug:
                 findings_block = "\n\n<b>Process log:</b>\n"
                 for aid, res in agent_results.items():
+                    if res.get("tool_used") == "declare_step":
+                        continue
                     tool = res.get("tool_used", "analysis")
                     preview = str(res.get("output", "done"))
                     preview = (preview[:120] + "...") if len(preview) > 120 else preview
@@ -1662,7 +1981,9 @@ def build_application(config: Config):
                 start_scheduler(config)
             except Exception:
                 pass
-            asyncio.create_task(unblacklist_loop())
+            _unblacklist_task = asyncio.create_task(
+                unblacklist_loop(), name="unblacklist_loop"
+            )
         except Exception:
             pass
 
@@ -1671,7 +1992,29 @@ def build_application(config: Config):
         manager = BackgroundAgentManager.initialize(application.bot)
         await manager.start()
 
-    app = ApplicationBuilder().token(token).post_init(_post_init).build()
+    async def _post_shutdown(application) -> None:
+        """Cancel background tasks on clean shutdown."""
+        from src.agents.background.manager import BackgroundAgentManager
+        manager = BackgroundAgentManager.get()
+        if manager is not None:
+            await manager.stop()
+        # Cancel the unblacklist loop if still running
+        for task in asyncio.all_tasks():
+            if task.get_name() in ("unblacklist_loop", "wake_processor"):
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        logger.info("shutdown_cleanup_complete")
+
+    app = (
+        ApplicationBuilder()
+        .token(token)
+        .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
+        .build()
+    )
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("help", help_handler))
     app.add_handler(CommandHandler("addkey", addkey_handler))

@@ -150,6 +150,16 @@ class ToolExecutor:
                 pass  # no running loop (e.g. in tests)
             return ""
 
+        # end_thinking — intercepted before registry, like declare_step
+        if tool_name == "end_thinking":
+            message = arguments.get("message", "").strip()
+            return f"__END_THINKING__:{message}"
+
+        # end_thinking — intercepted before registry, like declare_step
+        if tool_name == "end_thinking":
+            message = arguments.get("message", "").strip()
+            return f"__END_THINKING__:{message}"
+
         # Registry tools
         tool_fn = self.registry.get(tool_name)
         if tool_fn is None:

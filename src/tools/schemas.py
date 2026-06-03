@@ -114,6 +114,46 @@ ALL_SCHEMAS: List[ToolSchema] = [
     ),
 
     ToolSchema(
+        name="end_thinking",
+        description=(
+            "Signal the end of the processing loop and deliver your final response "
+            "to the user. This is the ONLY valid way to finish a task. "
+            "Call this when you have a complete answer ready. "
+            "Never output raw text without a tool call — always use end_thinking."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "message": _str_param(
+                    "Your complete, final response to the user. "
+                    "Write it as if speaking directly to them."
+                ),
+            },
+        },
+        required_params=["message"],
+    ),
+
+    ToolSchema(
+        name="end_thinking",
+        description=(
+            "Signal the end of the processing loop and deliver your final response "
+            "to the user. This is the ONLY valid way to finish a task. "
+            "Call this when you have a complete answer ready. "
+            "Never output raw text without a tool call — always use end_thinking."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "message": _str_param(
+                    "Your complete, final response to the user. "
+                    "Write it as if speaking directly to them."
+                ),
+            },
+        },
+        required_params=["message"],
+    ),
+
+    ToolSchema(
         name="web_search",
         description=(
             "Search the web using DuckDuckGo. Returns a list of results with "
