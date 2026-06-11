@@ -113,7 +113,11 @@ def _extract_response_text(resp: dict) -> str:
 
 # ---------------------------------------------------------------------------
 def _is_fatal_provider_error(err_str: str) -> bool:
-    """Return True for errors that should skip to the next provider immediately."""
+    """Return True for errors that should skip to the next provider immediately.
+
+    Includes tool_use_failed: Groq's function-calling schema rejection is a
+    capability/context issue for this turn — retrying burns TPM quota.
+    """
     e = err_str.lower()
     return (
         "429" in e
@@ -123,6 +127,8 @@ def _is_fatal_provider_error(err_str: str) -> bool:
         or "401" in e
         or "unauthorized" in e
         or "invalid api key" in e
+        or "tool_use_failed" in e
+        or "no api key available" in e
     )
 
 
@@ -1081,7 +1087,8 @@ async def _handle_direct_reply(
 
 async def _run_orchestration_guarded(
     sem: asyncio.Semaphore, bot, chat_id, message_id, user_id,
-    context_str, original_text, history, summary, cfg, keyboard=None
+    context_str, original_text, history, summary, cfg, keyboard=None,
+    tg_user_id: int = 0,
 ) -> None:
     if sem.locked() and sem._value == 0:  # type: ignore[attr-defined]
         try:
@@ -1096,7 +1103,8 @@ async def _run_orchestration_guarded(
     async with sem:
         await run_orchestration_background(
             bot, chat_id, message_id, user_id,
-            context_str, original_text, history, summary, keyboard
+            context_str, original_text, history, summary, keyboard,
+            tg_user_id=tg_user_id,
         )
 
 
@@ -1324,9 +1332,9 @@ async def run_orchestration_background(
             last_error = None
             for p_name in priorities:
                 # Check cancel between providers
-                if _CANCEL_FLAGS.get(user_id, False):
+                if _CANCEL_FLAGS.get(_session_id, False):
                     await flush(f"{_agent_name(cfg)} task stopped by user.")
-                    _CANCEL_FLAGS[user_id] = False
+                    _CANCEL_FLAGS[_session_id] = False
                     return
                 
                 # Build payload with correct model for this provider

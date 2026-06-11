@@ -84,12 +84,17 @@ class VectorStore:
         try:
             def _upsert() -> None:
                 vector = self._embed_passage(text)
+                # Wrap in named-vector dict when collection uses named vectors.
+                # get_vector_field_name() returns the model slug (e.g.
+                # 'fast-bge-small-en') or '' for legacy unnamed collections.
+                vec_name = self.client.get_vector_field_name()
+                vec_payload = {vec_name: vector} if vec_name else vector
                 self.client.upsert(
                     collection_name=self.collection_name,
                     points=[
                         qdrant_models.PointStruct(
                             id=abs(hash(text)) % (2 ** 63),
-                            vector=vector,
+                            vector=vec_payload,
                             payload=payload,
                         )
                     ],
