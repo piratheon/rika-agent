@@ -1,17 +1,3 @@
-"""Telegram bot entry point.
-
-Changes vs v1:
-- cfg = Config.get() moved before any branch that uses it (NameError fix).
-- document_handler no longer mutates the frozen Update object.
-- Per-user orchestration semaphore (max 2 concurrent tasks).
-- Background agent manager initialized in main().
-- /watch, /watchers, /stopwatch, /wakelog commands.
-- /memory, /deletememory commands.
-- Sentinel promoted to BackgroundAgentManager with system watcher.
-- Streaming path wired through LiveBubble for direct replies.
-- Core logic extracted to src.core for reuse across interfaces.
-"""
-
 from __future__ import annotations
 
 print("""
@@ -1251,7 +1237,12 @@ async def run_orchestration_background(
     bot, chat_id: int, message_id: int, user_id: int,
     context_str: str, original_text: str, history: list, summary: Optional[str],
     keyboard=None
+,
+    tg_user_id: int = 0,
 ) -> None:
+    # Use Telegram user_id for session-state dicts so the stop
+    # button (which sends Telegram ID) can find the running task.
+    _session_id = tg_user_id if tg_user_id else user_id
     from src.db.chat_store import add_chat_message
     from src.live.live_bubble import LiveBubble
 
@@ -2073,6 +2064,22 @@ def main() -> None:
 
 async def _run_background_only(config: Config) -> None:
     from src.db.key_store import init_db
+    await init_db()
+    try:
+        from src.providers.unblacklist_scheduler import unblacklist_loop
+        from src.scheduler import start_scheduler
+        try:
+            start_scheduler(config)
+        except Exception:
+            pass
+        await unblacklist_loop()
+    except Exception:
+        pass
+
+
+if __name__ == "__main__":
+    main()
+import init_db
     await init_db()
     try:
         from src.providers.unblacklist_scheduler import unblacklist_loop

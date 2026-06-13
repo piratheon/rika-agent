@@ -1,17 +1,10 @@
 {
-  "_comment": "Copy this to config.json and edit. Never commit config.json with real values.",
-  "bot_name": "rk-agent",
-  "access_mode": "allowlist",
-  "allowed_user_ids": [],
+  "_comment": "Copy this to config.json and fill in your values. Never commit config.json with real keys.",
+
+  "bot_name": "rika-agent",
 
   "default_provider_priority": ["groq", "openrouter", "gemini"],
   "default_model": "gemini-2.0-flash",
-
-  "ollama_enabled": false,
-  "ollama_base_url": "http://localhost:11434",
-  "ollama_default_model": "llama3.2",
-
-  "g4f_enabled": false,
 
   "enable_code_execution": true,
   "enable_wikipedia_search": true,
@@ -20,16 +13,38 @@
   "enable_command_security": true,
   "command_security_level": "standard",
 
-  "workspace_path": "~/.Rika-Workspace",
+  "workspace_path": "~/.rika/shared",
   "workspace_max_size_mb": 500,
 
   "max_context_messages": 40,
   "max_concurrent_orchestrations_per_user": 2,
   "max_background_agents_per_user": 10,
 
+  "provider_max_retries": 2,
+  "provider_retry_delay": 2.0,
+
   "gemini_quota_reset_utc_hour": 8,
   "groq_quota_reset_utc_hour": 0,
   "openrouter_quota_reset_utc_hour": 0,
+
+  "ollama_enabled": false,
+  "ollama_base_url": "http://localhost:11434",
+  "ollama_default_model": "llama3.2",
+
+  "g4f_enabled": false,
+
+  "vercel_enabled": false,
+  "vercel_model": "openai/gpt-4o-mini",
+  "vercel_auto_detect": true,
+
+  "nvidia_enabled": false,
+  "nvidia_model": "meta/llama-3.1-70b-instruct",
+  "nvidia_auto_detect": true,
+
+  "vercel_postgres_enabled": false,
+  "vercel_postgres_pool_min": 2,
+  "vercel_postgres_pool_max": 10,
+  "vercel_kv_enabled": false,
 
   "log_level": "info"
 }
