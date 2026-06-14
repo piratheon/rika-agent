@@ -389,6 +389,12 @@ class ProviderPool:
 
         Args:
             reduced: If True, halve the cap (used on tool_use_failed retry).
+
+        The effective cap is floored at 2 and "end_thinking" is always kept
+        alongside "declare_step" -- without end_thinking in the schema list
+        the model has NO valid JSON way to finish the turn and falls back to
+        leaking raw text (legacy "TOOL: x | KEY: y" or native
+        "<function=...>...</function>" syntax) into the user-facing message.
         """
         cap = self._TOOL_CAPS.get(provider)
         if cap is None:
@@ -396,6 +402,7 @@ class ProviderPool:
         working = self._working_caps.get(provider, cap)
         effective_base = min(cap, working)
         effective = effective_base // 2 if reduced else effective_base
+        effective = max(effective, 2)  # never drop below 2 -- floor
         if len(tool_schemas) <= effective:
             return tool_schemas
         logger.info(
@@ -404,13 +411,26 @@ class ProviderPool:
             original=len(tool_schemas),
             capped=effective,
         )
-        # Prefer keeping declare_step first, then the most broadly useful tools
-        priority = ["declare_step", "web_search", "run_shell_command", "run_python",
-                    "curl", "read_file", "write_file", "delegate_task"]
+        # end_thinking and declare_step are mandatory -- always kept first.
+        priority = ["end_thinking", "declare_step", "web_search", "run_shell_command",
+                    "run_python", "curl", "read_file", "write_file", "delegate_task"]
         schema_map = {s.name: s for s in tool_schemas if hasattr(s, 'name')}
         ordered = [schema_map[n] for n in priority if n in schema_map]
         remaining = [s for s in tool_schemas if s not in ordered]
         return (ordered + remaining)[:effective]
+
+    def reset_tool_caps(self, provider: Optional[str] = None) -> None:
+        """Reset adaptive tool-schema caps back to their configured maximum.
+
+        _working_caps degrades (halves) on every tool_use_failed and never
+        recovers on its own. Call this once per incoming user message so a
+        bad turn cannot permanently cripple function calling for the rest
+        of the session.
+        """
+        if provider is None:
+            self._working_caps.clear()
+        else:
+            self._working_caps.pop(self._normalize(provider), None)
 
     def _make_adapter(self, provider: str, api_key: str):
         norm = self._normalize(provider)
