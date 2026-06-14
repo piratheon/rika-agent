@@ -147,20 +147,6 @@ def _is_retryable_provider_error(exc: Exception | None, err_str: str) -> bool:
     )
 
 
-def _is_fatal_provider_error(err_str: str) -> bool:
-    """Return True for errors that should skip to the next provider immediately."""
-    e = err_str.lower()
-    return (
-        "429" in e
-        or "quota" in e
-        or "exhausted" in e
-        or "rate limit" in e
-        or "401" in e
-        or "unauthorized" in e
-        or "invalid api key" in e
-    )
-
-
 # /start
 # ---------------------------------------------------------------------------
 
@@ -723,23 +709,50 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 # ---------------------------------------------------------------------------
 
 async def stop_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle stop button click — cancels current task for user."""
+    """Handle stop button click — cancels active task or countdown wait."""
     query = update.callback_query
     user_id = query.from_user.id
-    
-    # Set cancel flag
+
     _CANCEL_FLAGS[user_id] = True
-    
-    # Cancel the active task
-    if user_id in _ACTIVE_TASKS:
-        task = _ACTIVE_TASKS[user_id]
-        if not task.done():
-            task.cancel()
-            await query.answer("Stopping task...")
-            logger.info("task_cancelled_by_user", user_id=user_id)
-            return
-    
-    await query.answer("No active task to stop.")
+
+    # If we are in a retry countdown, signal it to stop immediately
+    if user_id in _STOP_EVENTS:
+        _STOP_EVENTS[user_id].set()
+
+    task = _ACTIVE_TASKS.get(user_id)
+    if task and not task.done():
+        task.cancel()
+        await query.answer("Stopping…")
+        try:
+            await query.edit_message_text("⏹ Task stopped by user.", reply_markup=None)
+        except Exception:
+            pass
+        logger.info("task_cancelled_by_user", user_id=user_id)
+        return
+
+    await query.answer("No active task.")
+
+
+
+
+# ---------------------------------------------------------------------------
+# Retry-now button handler
+# ---------------------------------------------------------------------------
+
+async def retry_now_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle Retry-now button — breaks the active countdown immediately."""
+    query = update.callback_query
+    data = query.data or ""
+    try:
+        uid = int(data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        uid = query.from_user.id
+
+    if uid in _RETRY_EVENTS:
+        _RETRY_EVENTS[uid].set()
+        await query.answer("Retrying now…")
+    else:
+        await query.answer("Nothing to retry.")
 
 
 # ---------------------------------------------------------------------------
@@ -747,21 +760,21 @@ async def stop_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 # ---------------------------------------------------------------------------
 
 async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /stop command — cancels current task for user."""
+    """Handle /stop command — cancels active task or countdown wait."""
     user_id = update.effective_user.id
-    
-    # Set cancel flag
+
     _CANCEL_FLAGS[user_id] = True
-    
-    # Cancel the active task
-    if user_id in _ACTIVE_TASKS:
-        task = _ACTIVE_TASKS[user_id]
-        if not task.done():
-            task.cancel()
-            logger.info("task_cancelled_by_command", user_id=user_id)
-            await update.message.reply_text("✅ Task stopped.")
-            return
-    
+
+    if user_id in _STOP_EVENTS:
+        _STOP_EVENTS[user_id].set()
+
+    task = _ACTIVE_TASKS.get(user_id)
+    if task and not task.done():
+        task.cancel()
+        logger.info("task_cancelled_by_command", user_id=user_id)
+        await update.message.reply_text("⏹ Task stopped.")
+        return
+
     await update.message.reply_text("No active task to stop.")
 
 
@@ -1215,17 +1228,18 @@ async def _show_retry_countdown(
     await _edit(wait_seconds)
 
     for remaining in range(wait_seconds - 1, -1, -1):
+        retry_task = asyncio.create_task(retry_event.wait())
+        stop_task  = asyncio.create_task(stop_event.wait())
         try:
-            await asyncio.wait_for(
-                asyncio.shield(asyncio.gather(
-                    _wait_event(retry_event),
-                    _wait_event(stop_event),
-                    return_exceptions=True,
-                )),
+            await asyncio.wait(
+                {retry_task, stop_task},
                 timeout=1.0,
+                return_when=asyncio.FIRST_COMPLETED,
             )
-        except asyncio.TimeoutError:
-            pass
+        finally:
+            for t_ in (retry_task, stop_task):
+                if not t_.done():
+                    t_.cancel()
         if stop_event.is_set():
             return "stop"
         if retry_event.is_set():
@@ -2027,6 +2041,7 @@ def build_application(config: Config):
     app.add_handler(CommandHandler("delete_me", delete_me_handler))
     app.add_handler(CallbackQueryHandler(callback_query_handler, pattern="^(confirm_delete|confirm_cleanws)$"))
     app.add_handler(CallbackQueryHandler(stop_task_handler, pattern="^stop_task:"))
+    app.add_handler(CallbackQueryHandler(retry_now_handler, pattern="^retry_now:"))
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(MessageHandler(filters.Document.ALL, document_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, key_submission_handler))
