@@ -1182,6 +1182,55 @@ async def _wait_event(event: asyncio.Event) -> None:
     await event.wait()
 
 
+
+import re as _re
+
+_LEGACY_TOOL_LINE_RE = _re.compile(
+    r'^[ \t]*TOOL:\s*[\w_]+\s*\|.*$',
+    _re.IGNORECASE | _re.MULTILINE,
+)
+_FUNCTION_TAG_RE = _re.compile(
+    r'<function=[^>]*>.*?(?:</function>|$)',
+    _re.IGNORECASE | _re.DOTALL,
+)
+_END_THINKING_MSG_RE = _re.compile(
+    r'<function=end_thinking>\s*\{.*?"message"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"',
+    _re.IGNORECASE | _re.DOTALL,
+)
+
+
+def _strip_legacy_tool_syntax(text: str) -> str:
+    """Strip leaked non-JSON tool-call syntax from model output.
+
+    Covers two formats that leak when function calling is unavailable
+    (e.g. tool schema cap dropped to 0):
+      - Legacy text protocol:  TOOL: name | KEY: value  (any key)
+      - Llama native tags:     <function=name>{...}</function>
+                                or an unterminated <function=name>{...}
+                                running to end of string.
+
+    Special case: if the leaked block is specifically
+    <function=end_thinking>{\"message\": \"...\"} -- the most common
+    leak -- extract the message text instead of discarding it, since it
+    usually contains the model's real (correct) answer.
+    """
+    if not text:
+        return text
+
+    extracted = _END_THINKING_MSG_RE.search(text)
+
+    cleaned = _FUNCTION_TAG_RE.sub('', text)
+    cleaned = _LEGACY_TOOL_LINE_RE.sub('', cleaned)
+    cleaned = _re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+
+    if not cleaned and extracted:
+        msg = extracted.group(1)
+        msg = msg.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+        return msg.strip()
+
+    return cleaned
+
+
 async def _show_retry_countdown(
     bot,
     chat_id: int,
@@ -1301,6 +1350,10 @@ async def run_orchestration_background(
     _no_tool_corr: int = 0             # consecutive turns without a tool call
     _provider_retry: int = 0           # how many times all providers have failed *this turn*
     _pending_content: str | None = None  # last no-tool-call answer, used as fallback
+
+    # Reset adaptive tool-schema caps for every new user message so a bad
+    # turn cannot permanently zero out function calling for this session.
+    pool.reset_tool_caps()
 
     try:
         max_turns = getattr(cfg, "max_turns", 20)
@@ -1517,7 +1570,7 @@ async def run_orchestration_background(
         bubble.update("Thinking", "done")
         await bubble.stop()
 
-        final = re.sub(r"TOOL:\s*[\w_]+\s*\|?\s*QUERY:.*", "", output, flags=re.IGNORECASE | re.DOTALL).strip()
+        final = _strip_legacy_tool_syntax(output)
         if final:
             narrative_chunks.append(final)
 
