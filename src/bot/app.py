@@ -1299,7 +1299,8 @@ async def run_orchestration_background(
     priorities = cfg.default_provider_priority or ["gemini", "groq", "openrouter"]
     _final_message: str | None = None  # set when end_thinking is called
     _no_tool_corr: int = 0             # consecutive turns without a tool call
-    _provider_retry: int = 0           # how many times all providers have failed
+    _provider_retry: int = 0           # how many times all providers have failed *this turn*
+    _pending_content: str | None = None  # last no-tool-call answer, used as fallback
 
     try:
         max_turns = getattr(cfg, "max_turns", 20)
@@ -1396,6 +1397,21 @@ async def run_orchestration_background(
                 _provider_retry += 1
                 logger.warning("all_providers_failed_retrying", turn=turn,
                                retry=_provider_retry, last_error=last_error)
+
+                # Deadlock guard: if all providers fail repeatedly on the SAME
+                # turn (e.g. Groq deterministically rejects this exact history
+                # with tool_use_failed every time), stop looping forever.
+                # Deliver the last known-good no-tool-call answer if we have one.
+                if _provider_retry >= 3:
+                    logger.warning("orchestration_same_turn_retry_limit", turn=turn,
+                                   has_pending=_pending_content is not None)
+                    await bubble.stop()
+                    if _pending_content:
+                        _final_message = _pending_content
+                    else:
+                        _final_message = ('I ran into repeated provider errors and could not finish this task. ' + _friendly_provider_error(last_error))
+                    break
+
                 await bubble.stop()
                 action = await _show_retry_countdown(
                     bot, chat_id, message_id, _session_id,
@@ -1466,6 +1482,8 @@ async def run_orchestration_background(
                     break
 
                 turn += 1  # advance to next turn
+                _provider_retry = 0
+                _pending_content = None
                 continue  # while loop
 
             # No tool call — LLM produced raw text. Inject correction warning.
@@ -1480,10 +1498,12 @@ async def run_orchestration_background(
                 logger.warning("orchestration_correction_limit_reached", turn=turn)
                 _final_message = (resp.content or "").strip() or "Task complete."
                 break
+            _pending_content = (resp.content or "").strip() or _pending_content
             thought_history.append({
                 "role": "user",
                 "content": _CORRECTION_WARNING + (resp.content or ""),
             })
+            _provider_retry = 0  # reset — fresh attempt on the correction
             continue  # while loop — same turn, no increment
 
         # ---- Post-loop: render final message ----
