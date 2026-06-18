@@ -43,7 +43,7 @@ class Config(BaseModel):
     enable_web_ui: bool = False
     enable_command_security: bool = True
     command_security_level: str = "standard"
-    workspace_path: str = "~/.Rika-Workspace"
+    workspace_path: str = "~/.rika/shared"
     workspace_max_size_mb: int = 500
     log_level: str = "info"
     default_model: str = "gemini-2.0-flash"
@@ -120,7 +120,7 @@ class Config(BaseModel):
         "4. TOOLS require background watchers: For tool execution (web_search, shell commands, etc.),\n"
         "   the user must have active watchers. Suggest /watch or /autowatch if they need tools.\n"
         "5. NO HALLUCINATION: If a tool fails or isn't available, be honest. Never fabricate results.\n"
-        "6. WORKSPACE: Your sandbox is ~/.Rika-Workspace (path in runtime context).\n"
+        "6. WORKSPACE: Your sandbox is ~/.rika/shared (path in runtime context).\n"
         "   Write temp files, scripts, and analysis artifacts there by default.\n"
         "7. COMMAND SECURITY: Destructive commands are blocked automatically.\n"
         "   Prefix medium-risk commands with 'CONFIRM: ' after warning the user.\n"
@@ -160,7 +160,6 @@ class Config(BaseModel):
         return (
             "\n--- AVAILABLE TOOLS ---\n"
             + "\n".join(tools)
-            + "\n\nTo call a tool: TOOL: tool_name | QUERY: your query"
         )
 
     def get_system_prompt_for_fc(self) -> str:

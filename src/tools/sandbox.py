@@ -248,7 +248,7 @@ async def run_sandboxed(
     if not code or not code.strip():
         return {"error": "No code provided", "stdout": "", "exit_code": 1}
 
-    ws = workspace or os.path.expanduser("~/.Rika-Workspace")
+    ws = workspace or os.path.expanduser("~/.rika/shared")
 
     logger.info("sandbox_execute", level=level, code_len=len(code), timeout=timeout)
 

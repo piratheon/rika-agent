@@ -204,7 +204,7 @@ ALL_SCHEMAS: List[ToolSchema] = [
         name="run_shell_command",
         description=(
             "Execute a shell command on the host system. "
-            "Working directory is the agent workspace (~/.Rika-Workspace). "
+            "Working directory is the agent workspace (~/.rika/shared). "
             "Use for file operations, system info, package management, git, and scripting. "
             "Dangerous commands (rm -rf /, fork bombs, disk wipes) are blocked automatically. "
             "For medium-risk commands blocked by the security filter, prefix with 'CONFIRM: '."
@@ -245,7 +245,7 @@ ALL_SCHEMAS: List[ToolSchema] = [
             "Send a file from the agent workspace to the user in the chat. "
             "Use this when you create a file the user needs to download: "
             "scripts, reports, generated code, analysis output, etc. "
-            "ONLY files inside ~/.Rika-Workspace can be sent — never server system files. "
+            "ONLY files inside ~/.rika/shared can be sent — never server system files. "
             "The path must be relative to the workspace root, e.g. 'report.py' or 'output/data.csv'."
         ),
         parameters={
@@ -266,7 +266,7 @@ ALL_SCHEMAS: List[ToolSchema] = [
     ToolSchema(
         name="list_workspace",
         description=(
-            "List all files and directories in the agent workspace (~/.Rika-Workspace). "
+            "List all files and directories in the agent workspace (~/.rika/shared). "
             "Use to check what files exist before reading or sending them."
         ),
         parameters={

@@ -150,6 +150,28 @@ def _is_retryable_provider_error(exc: Exception | None, err_str: str) -> bool:
 # /start
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# Global auth gate — runs before every handler via TypeHandler group=-1
+# ---------------------------------------------------------------------------
+
+async def _auth_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reject all updates from non-owner users before any handler runs.
+
+    PTB 21+ supports negative group numbers. TypeHandler at group=-1 fires
+    first. Raising ApplicationHandlerStop prevents every subsequent handler
+    from receiving the update — no per-command guard needed.
+    """
+    owner = os.environ.get("OWNER_USER_ID", "").strip()
+    if not owner:
+        return  # OWNER_USER_ID not set — open mode (development only)
+    uid = update.effective_user.id if update.effective_user else None
+    if uid is None or str(uid) != owner:
+        # Silent drop — do not reveal the bot exists to strangers.
+        from telegram.ext import ApplicationHandlerStop
+        raise ApplicationHandlerStop
+
+
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = Config.get()
     from src.db.key_store import init_db, upsert_user
@@ -2091,6 +2113,10 @@ def build_application(config: Config):
         .post_shutdown(_post_shutdown)
         .build()
     )
+    # Auth gate — must be first (group=-1 runs before all other groups)
+    from telegram.ext import TypeHandler
+    app.add_handler(TypeHandler(Update, _auth_gate), group=-1)
+
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("help", help_handler))
     app.add_handler(CommandHandler("addkey", addkey_handler))

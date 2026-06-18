@@ -69,7 +69,7 @@ _RULES: List[SecurityRule] = [
         pattern=_r(r"\brm\b.*?(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|--recursive.*--force|--force.*--recursive).*?(?:/\s*$|/\*|/\s+\*|\"/?\"|\s+/\b)"),
         severity="CRITICAL",
         reason="Recursive force-delete targeting root or wildcard — would wipe the filesystem.",
-        suggestion="Specify the exact path you want to delete, e.g.: rm -rf ~/.Rika-Workspace/tmp/",
+        suggestion="Specify the exact path you want to delete, e.g.: rm -rf ~/.rika/shared/tmp/",
     ),
     SecurityRule(
         name="rm_no_preserve_root",
@@ -241,7 +241,7 @@ def _is_within_workspace(path: str, workspace: str) -> bool:
 
 def check_command(
     command: str,
-    workspace_path: str = "~/.Rika-Workspace",
+    workspace_path: str = "~/.rika/shared",
     security_level: str = "standard",
 ) -> SecurityCheckResult:
     """Check a shell command against the security ruleset.

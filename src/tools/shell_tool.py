@@ -1,5 +1,6 @@
 """Shell tool — command execution with security checking and workspace isolation."""
 from __future__ import annotations
+import re
 
 import asyncio
 import os
@@ -60,7 +61,7 @@ async def run_shell_command(command: str, user_id: int = 0, workspace: Optional[
     """Execute a shell command with security checking and workspace isolation.
 
     Prefix the command with 'CONFIRM: ' to override a MEDIUM-severity block after warning.
-    All commands run with cwd=~/.Rika-Workspace by default.
+    All commands run with cwd=~/.rika/shared by default.
     """
     ws = workspace or _get_workspace()
 
@@ -94,6 +95,19 @@ async def run_shell_command(command: str, user_id: int = 0, workspace: Optional[
                     "stderr": "",
                     "exit_code": -1,
                 }
+
+    # Secondary structural check — blocks injection patterns that evade
+    # the regex-based command_security checker regardless of security level.
+    _INJECT_RE = re.compile(r'`[^`]+`|\$\([^)]+\)|;\s*(?:rm|curl|wget|nc|bash|sh)\b',
+                             re.IGNORECASE)
+    if _INJECT_RE.search(cmd):
+        logger.warning("shell_structural_injection_blocked", command=cmd[:200])
+        return {
+            "blocked": True,
+            "severity": "critical",
+            "message": "Command blocked: contains shell injection pattern ($(), backticks, or chained rm/curl/wget/nc/bash/sh).",
+            "stdout": "", "stderr": "", "exit_code": -1,
+        }
 
     logger.info("executing_shell_command", command=cmd[:200], workspace=ws)
 

@@ -321,6 +321,7 @@ class ProviderPool:
         if norm_p == "vercel":
             env_variants.append("VERCEL_API_KEY")
         
+        env_str = ""  # reset for each provider — prevents cross-provider leakage
         for env_var in env_variants:
             env_str = os.environ.get(env_var, "")
             if env_str.strip():
@@ -334,8 +335,16 @@ class ProviderPool:
                                   "last_used_at": _VIRTUAL_KEY_USAGE.get(usage_key, datetime.min).isoformat(),
                                   "quota_resets_at": None, "usage_key": usage_key})
         if not provider_keys:
-            logger.warning("provider_pool_no_keys_found", provider=provider, user_id=user_id, 
-                          env_vars_checked=env_variants, db_keys_count=len(db_keys))
+            logger.warning(
+                "provider_pool_no_keys_found",
+                provider=provider,
+                user_id=user_id,
+                env_vars_checked=env_variants,
+                # db_keys_count = keys found for THIS provider (not global total)
+                db_keys_count=len([k for k in db_keys
+                                   if self._normalize(k.get("provider", "")) == norm_p]),
+                env_key_found=bool(env_str.strip()),
+            )
             return None
 
         def _lru(k):
