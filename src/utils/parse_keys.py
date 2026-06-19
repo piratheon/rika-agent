@@ -3,7 +3,7 @@ from typing import Dict
 
 # Accept formats like: openrouter:"sk-..." groq:gsk_... google=AIza... etc.
 # Narrowed down to avoid catching URLs like https://...
-RE = re.compile(r"(?P<provider>gemini|google|openrouter|groq|anthropic|openai)\s*[:=]\s*(?:\"(?P<quoted>[^\"]+)\"|(?P<bare>[A-Za-z0-9_\-]{10,}))", re.IGNORECASE)
+RE = re.compile(r"(?P<provider>gemini|google|openrouter|groq|anthropic|openai|nvidia|vercel|ollama|g4f)\s*[:=]\s*(?:\"(?P<quoted>[^\"]+)\"|(?P<bare>[A-Za-z0-9_\-]{10,}))", re.IGNORECASE)
 
 
 def parse_keys(text: str) -> Dict[str, str]:
