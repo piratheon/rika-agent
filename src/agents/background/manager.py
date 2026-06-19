@@ -190,6 +190,25 @@ Respond with ONLY the JSON array, no explanation."""
 
         return created
 
+    async def stop(self) -> None:
+        """Cancel all watcher tasks and the wake processor. Called on shutdown."""
+        if self._processor and not self._processor.done():
+            self._processor.cancel()
+            try:
+                await self._processor
+            except asyncio.CancelledError:
+                pass
+            self._processor = None
+
+        if self._tasks:
+            for task in list(self._tasks.values()):
+                task.cancel()
+            await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+            self._tasks.clear()
+
+        self._started = False
+        logger.info("background_manager_stopped")
+
     async def stop_agent(self, agent_id: str) -> bool:
         task = self._tasks.pop(agent_id, None)
         if task is None:

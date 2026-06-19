@@ -13,20 +13,22 @@
 
 <h3>Self-hosted agentic AI on your own hardware — Telegram-native, privacy-first.</h3>
 
+
 <br/>
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot_API-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://core.telegram.org/bots)
-[![License](https://img.shields.io/badge/License-MIT-22c55e?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](docker-compose.yml)
 [![SQLite](https://img.shields.io/badge/Storage-SQLite_%2B_Qdrant-003B57?style=flat-square&logo=sqlite&logoColor=white)](#architecture)
 [![Security](https://img.shields.io/badge/Keys-AES--256--GCM-dc2626?style=flat-square&logo=keepassxc&logoColor=white)](#security)
 
-[![Gemini](https://img.shields.io/badge/Gemini-2.0_Flash-4285F4?style=flat-square&logo=google&logoColor=white)](#providers)
-[![Groq](https://img.shields.io/badge/Groq-llama3.3_70b-f97316?style=flat-square)](#providers)
-[![OpenRouter](https://img.shields.io/badge/OpenRouter-200%2B_models-7c3aed?style=flat-square)](#providers)
-[![Ollama](https://img.shields.io/badge/Ollama-local%2C_free-111827?style=flat-square)](#ollama--g4f)
-[![G4F](https://img.shields.io/badge/G4F-no_key_needed-16a34a?style=flat-square)](#ollama--g4f)
+**Online Providers:**
+
+[![NVIDIA](https://img.shields.io/badge/nVIDIA-%2376B900.svg?style=flat-square&logo=nVIDIA&logoColor=white)](#providers)
+[![Google GenAI](https://img.shields.io/badge/Google%20GenAI-886FBF?logo=googlegemini&logoColor=fff)](#providers)
+[![Groq](https://img.shields.io/badge/GROQ-f97316?style=flat-square)](#providers)
+[![OpenRouter](https://img.shields.io/badge/OpenRouter-7c3aed?style=flat-square)](#providers)
 
 <br/>
 
@@ -34,7 +36,7 @@
 
 ---
 
-> **rika-agent** is the evolution of [Rikka-Bot](https://github.com/piratheon/rika-agent/releases/tag/v2.0.0). Same soul, continuously refined architecture. v2.1 ships JSON function calling, background system monitoring, a three-level code sandbox, vision input, file delivery, token-efficient context, and Ollama/G4F support — running entirely on your own server, with your data staying yours.
+> **rika-agent** is the evolution of [Rikka-Bot](https://github.com/piratheon/rika-agent/releases/tag/v2.0.0). Same soul, continuously refined architecture. v2.1.8 ships JSON function calling, background system monitoring, a three-level code sandbox, vision input, file delivery, token-efficient context, Ollama/G4F/NVIDIA NIM/Vercel AI support, automatic provider failover with countdown retry, and Postgres backend support — running entirely on your own server, with your data staying yours.
 
 ---
 
@@ -74,7 +76,7 @@ No copy-paste. No switching tabs. It just does it.
 <td width="50%">
 
 **Providers**
-- Gemini, Groq, OpenRouter — key rotation with LRU selection
+- Gemini, NVIDIA, Groq, OpenRouter, Vercel — key rotation with LRU selection
 - Ollama — local models, zero cost, zero data egress
 - G4F — free endpoints (GPT-4o, Claude, Llama), no key needed
 - Blacklist + quota-reset scheduling per provider
@@ -197,18 +199,30 @@ docker compose logs -f
 TELEGRAM_BOT_TOKEN=
 BOT_ENCRYPTION_KEY=   # generate: python3 -c "import secrets; print(secrets.token_hex(32))"
 
+# Owner / auth
+OWNER_USER_ID=        # your Telegram ID — bot will only respond to this user
+
 # Optional
 DATABASE_PATH=./data/rk.db
-OWNER_USER_ID=        # your Telegram ID — enables /broadcast and /reload
-AGENT_NAME=lain       # display name in all messages (lain, rei, Rika, aria...)
+AGENT_NAME=rika       # display name (purely cosmetic)
 
-# Pre-loaded provider keys (can also be added via /addkey in Telegram)
+# Provider keys (can also be added later via /addkey in Telegram)
 GEMINI_API_KEY=
 GROQ_API_KEY=
 OPENROUTER_API_KEY=
+NVIDIA_API_KEY=       # auto-enables NVIDIA NIM when set
+VERCEL_API_KEY=       # Vercel AI Gateway (also set VERCEL=1)
+
+# Postgres backend (optional — uses SQLite if unset)
+POSTGRES_URL=         # postgresql://user:pass@host:5432/db
+                      # pip install asyncpg
+
+# Vercel KV / Upstash Redis (optional)
+KV_REST_API_URL=
+KV_REST_API_TOKEN=
 ```
 
-> `AGENT_NAME` is purely cosmetic — the project name stays `rika-agent`. Set it to whatever you want your agent to call itself.
+> `AGENT_NAME` is purely cosmetic — the project name stays `rika-agent`.
 
 ### `config.json` — behavior
 
@@ -222,13 +236,25 @@ OPENROUTER_API_KEY=
   "enable_command_security": true,
   "command_security_level": "standard",
 
-  "workspace_path": "~/.Rika-Workspace",
+  "workspace_path": "~/.rika/shared",
+
+  "provider_max_retries": 2,
+  "provider_retry_delay": 2.0,
 
   "ollama_enabled": false,
   "ollama_base_url": "http://localhost:11434",
   "ollama_default_model": "llama3.2",
+
   "g4f_enabled": false,
   "g4f_model": "MiniMaxAI/MiniMax-M2.5",
+
+  "nvidia_enabled": false,
+  "nvidia_model": "meta/llama-3.1-70b-instruct",
+  "nvidia_auto_detect": true,
+
+  "vercel_enabled": false,
+  "vercel_model": "openai/gpt-4o-mini",
+  "vercel_auto_detect": true,
 
   "max_context_messages": 40,
   "max_concurrent_orchestrations_per_user": 2,
@@ -262,8 +288,12 @@ $EDITOR soul.md
 | **Gemini** | Yes (generous) | Best multimodal, 1M context, native vision |
 | **Groq** | Yes | Fastest inference — llama3.3-70b, mixtral |
 | **OpenRouter** | Pay-per-token | 200+ models including GPT-4o, Claude 3.5 |
+| **NVIDIA NIM** | Free credits | llama-3.1-70b, nemotron-4-340b, mixtral — set `NVIDIA_API_KEY` |
+| **Vercel AI** | Pay-per-token | AI Gateway — set `VERCEL_API_KEY` + `VERCEL=1` |
 
-Add via `/addkey` in Telegram or paste `provider:"key"` pairs directly in chat. Multiple keys per provider — the pool rotates automatically.
+Add via `/addkey` in Telegram or paste `provider:"key"` pairs directly in chat. Multiple keys per provider — the pool rotates automatically on rate limits or quota exhaustion.
+
+Provider priority and automatic failover is configurable via `default_provider_priority` in `config.json`.
 
 ### Ollama & G4F
 
@@ -445,23 +475,28 @@ rika-agent/
 ├── soul.md.template            agent personality starting point
 ├── .env.template               all env vars documented
 ├── docker-compose.yml
-├── ToDo.md                     GTK4 UI · WebUI · roadmap
 └── README.md
 ```
 
 ---
 
-## v2.0 → v2.1 changelog
+## Changelog
 
-| | rika-agent v2.0 | rika-agent v2.1 |
-|---|---|---|
-| Background monitoring | 6 watcher types | 7 watcher types — adds `ScriptWatcher` |
-| Watcher setup | Manual `/watch` commands only | `/autowatch` — AI-driven natural language setup |
-| Memory injection | Full history dump | Pinned (max 5) + relevant (top 4) only — token-efficient |
-| Memory pinning | Not available | `/pinmemory` / `/unpinmemory` commands |
-| Tool timeout | No per-tool limit | `tool_timeout_seconds` in `config.json` |
-| Per-model config | Single `default_model` key | Per-provider model keys (`groq_model`, `openrouter_model`, etc.) |
-| G4F model | Default only | `g4f_model` configurable in `config.json` |
+### v2.1.5 → v2.1.8
+
+| Area | Change |
+|------|--------|
+| **Orchestration** | `end_thinking(message)` is now the only valid loop exit — prevents mid-thought responses reaching the user |
+| **Provider failover** | 30-second countdown with live progress bar and Stop / Retry now buttons instead of error message on rate limit |
+| **Provider failover** | Auto-retry on timeout and 403 errors with exponential backoff before switching providers |
+| **Stop button** | Fixed — now reliably cancels the active asyncio task and updates the message |
+| **Vector memory** | Qdrant `add()` / `query()` replaced with `upsert()` / `query_points()` — no more deprecation warnings |
+| **NVIDIA NIM** | New provider — llama-3.1-70b-instruct, nemotron-4-340b, mixtral, gemma-7b. Auto-enabled via `NVIDIA_API_KEY` |
+| **Vercel AI** | New provider — AI Gateway with automatic routing. Auto-enabled via `VERCEL_API_KEY` + `VERCEL=1` |
+| **Postgres** | Optional Postgres backend via `POSTGRES_URL`. SQLite remains default. |
+| **Vercel KV** | Optional Upstash Redis client for session caching |
+| **Shutdown** | Background tasks (unblacklist loop, wake processor) cancelled cleanly on SIGINT |
+| **Process log** | `declare_step` no longer generates empty lines in the work log |
 
 ---
 
@@ -493,7 +528,7 @@ Three security levels in `config.json`:
 <details>
 <summary>File delivery</summary>
 
-`send_file` resolves symlinks and rejects any path outside `~/.Rika-Workspace`. `../` traversal attempts are blocked and logged.
+`send_file` resolves symlinks and rejects any path outside `~/.rika/shared`. `../` traversal attempts are blocked and logged.
 
 </details>
 

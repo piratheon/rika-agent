@@ -32,7 +32,10 @@ class VectorStore:
                 except Exception as exc:
                     logger.error("qdrant_init_failed", error=str(exc))
             else:
-                logger.warning("qdrant_not_installed", detail="pip install 'qdrant-client[fastembed]'")
+                logger.warning(
+                    "qdrant_not_installed",
+                    detail="pip install 'qdrant-client[fastembed]'",
+                )
             cls._instance = obj
         return cls._instance
 
@@ -52,6 +55,22 @@ class VectorStore:
             except Exception as exc:
                 logger.error("vector_collection_creation_failed", error=str(exc))
 
+    def _embed_passage(self, text: str) -> list[float]:
+        """Embed a document passage using the client's local fastembed model."""
+        model = self.client._get_or_init_model(
+            model_name=self.client.embedding_model_name,
+            deprecated=True,
+        )
+        return list(model.passage_embed([text]))[0].tolist()
+
+    def _embed_query(self, text: str) -> list[float]:
+        """Embed a search query using the client's local fastembed model."""
+        model = self.client._get_or_init_model(
+            model_name=self.client.embedding_model_name,
+            deprecated=True,
+        )
+        return list(model.query_embed(text))[0].tolist()
+
     async def add_memory(
         self,
         user_id: int,
@@ -60,23 +79,36 @@ class VectorStore:
     ) -> None:
         if self.client is None:
             return
-        loop = asyncio.get_running_loop()  # fixed: was get_event_loop()
-        payload = {**(metadata or {}), "user_id": user_id}
+        loop = asyncio.get_running_loop()
+        payload = {**(metadata or {}), "user_id": user_id, "text": text}
         try:
-            await loop.run_in_executor(
-                None,
-                lambda: self.client.add(
+            def _upsert() -> None:
+                vector = self._embed_passage(text)
+                # Wrap in named-vector dict when collection uses named vectors.
+                # get_vector_field_name() returns the model slug (e.g.
+                # 'fast-bge-small-en') or '' for legacy unnamed collections.
+                vec_name = self.client.get_vector_field_name()
+                vec_payload = {vec_name: vector} if vec_name else vector
+                self.client.upsert(
                     collection_name=self.collection_name,
-                    documents=[text],
-                    metadata=[payload],
-                ),
-            )
+                    points=[
+                        qdrant_models.PointStruct(
+                            id=abs(hash(text)) % (2 ** 63),
+                            vector=vec_payload,
+                            payload=payload,
+                        )
+                    ],
+                )
+            await loop.run_in_executor(None, _upsert)
         except Exception as exc:
+            global _VECTOR_DISABLED
             if any(x in str(exc) for x in ("NO_SUCH", "onnx", "model_optimized", "fastembed")):
-                global _VECTOR_DISABLED
                 if not _VECTOR_DISABLED:
                     _VECTOR_DISABLED = True
-                    logger.warning("vector_store_disabled", reason="ONNX model missing — pip install fastembed")
+                    logger.warning(
+                        "vector_store_disabled",
+                        reason="ONNX model missing — pip install fastembed",
+                    )
             else:
                 logger.error("vector_add_failed", error=str(exc))
 
@@ -85,13 +117,14 @@ class VectorStore:
     ) -> List[Dict[str, Any]]:
         if self.client is None:
             return []
-        loop = asyncio.get_running_loop()  # fixed: was get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
-            results = await loop.run_in_executor(
-                None,
-                lambda: self.client.query(
+            def _query() -> list:
+                vector = self._embed_query(query)
+                result = self.client.query_points(
                     collection_name=self.collection_name,
-                    query_text=query,
+                    query=vector,
+                    using=self.client.get_vector_field_name(),
                     query_filter=qdrant_models.Filter(
                         must=[
                             qdrant_models.FieldCondition(
@@ -101,18 +134,30 @@ class VectorStore:
                         ]
                     ),
                     limit=limit,
-                ),
-            )
+                    with_payload=True,
+                )
+                return result.points if hasattr(result, "points") else result
+
+            points = await loop.run_in_executor(None, _query)
             return [
-                {"text": r.document, "score": r.score, "metadata": r.metadata}
-                for r in results
+                {
+                    "text": r.payload.get("text", "") if r.payload else "",
+                    "score": r.score,
+                    "metadata": {
+                        k: v for k, v in (r.payload or {}).items() if k != "text"
+                    },
+                }
+                for r in points
             ]
         except Exception as exc:
+            global _VECTOR_DISABLED
             if any(x in str(exc) for x in ("NO_SUCH", "onnx", "model_optimized", "fastembed")):
-                global _VECTOR_DISABLED
                 if not _VECTOR_DISABLED:
                     _VECTOR_DISABLED = True
-                    logger.warning("vector_store_disabled", reason="ONNX model missing")
+                    logger.warning(
+                        "vector_store_disabled",
+                        reason="ONNX model missing",
+                    )
             else:
                 logger.error("vector_search_failed", error=str(exc))
             return []

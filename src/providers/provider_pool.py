@@ -315,7 +315,13 @@ class ProviderPool:
         # Special case for gemini/google
         if norm_p == "gemini":
             env_variants.append("GOOGLE_API_KEY")
+        # Vercel deployments expose VERCEL_API_KEY
+        if norm_p == "nvidia":
+            env_variants.append("NVIDIA_API_KEY")
+        if norm_p == "vercel":
+            env_variants.append("VERCEL_API_KEY")
         
+        env_str = ""  # reset for each provider — prevents cross-provider leakage
         for env_var in env_variants:
             env_str = os.environ.get(env_var, "")
             if env_str.strip():
@@ -329,8 +335,16 @@ class ProviderPool:
                                   "last_used_at": _VIRTUAL_KEY_USAGE.get(usage_key, datetime.min).isoformat(),
                                   "quota_resets_at": None, "usage_key": usage_key})
         if not provider_keys:
-            logger.warning("provider_pool_no_keys_found", provider=provider, user_id=user_id, 
-                          env_vars_checked=env_variants, db_keys_count=len(db_keys))
+            logger.warning(
+                "provider_pool_no_keys_found",
+                provider=provider,
+                user_id=user_id,
+                env_vars_checked=env_variants,
+                # db_keys_count = keys found for THIS provider (not global total)
+                db_keys_count=len([k for k in db_keys
+                                   if self._normalize(k.get("provider", "")) == norm_p]),
+                env_key_found=bool(env_str.strip()),
+            )
             return None
 
         def _lru(k):
@@ -384,6 +398,12 @@ class ProviderPool:
 
         Args:
             reduced: If True, halve the cap (used on tool_use_failed retry).
+
+        The effective cap is floored at 2 and "end_thinking" is always kept
+        alongside "declare_step" -- without end_thinking in the schema list
+        the model has NO valid JSON way to finish the turn and falls back to
+        leaking raw text (legacy "TOOL: x | KEY: y" or native
+        "<function=...>...</function>" syntax) into the user-facing message.
         """
         cap = self._TOOL_CAPS.get(provider)
         if cap is None:
@@ -391,6 +411,7 @@ class ProviderPool:
         working = self._working_caps.get(provider, cap)
         effective_base = min(cap, working)
         effective = effective_base // 2 if reduced else effective_base
+        effective = max(effective, 2)  # never drop below 2 -- floor
         if len(tool_schemas) <= effective:
             return tool_schemas
         logger.info(
@@ -399,13 +420,26 @@ class ProviderPool:
             original=len(tool_schemas),
             capped=effective,
         )
-        # Prefer keeping declare_step first, then the most broadly useful tools
-        priority = ["declare_step", "web_search", "run_shell_command", "run_python",
-                    "curl", "read_file", "write_file", "delegate_task"]
+        # end_thinking and declare_step are mandatory -- always kept first.
+        priority = ["end_thinking", "declare_step", "web_search", "run_shell_command",
+                    "run_python", "curl", "read_file", "write_file", "delegate_task"]
         schema_map = {s.name: s for s in tool_schemas if hasattr(s, 'name')}
         ordered = [schema_map[n] for n in priority if n in schema_map]
         remaining = [s for s in tool_schemas if s not in ordered]
         return (ordered + remaining)[:effective]
+
+    def reset_tool_caps(self, provider: Optional[str] = None) -> None:
+        """Reset adaptive tool-schema caps back to their configured maximum.
+
+        _working_caps degrades (halves) on every tool_use_failed and never
+        recovers on its own. Call this once per incoming user message so a
+        bad turn cannot permanently cripple function calling for the rest
+        of the session.
+        """
+        if provider is None:
+            self._working_caps.clear()
+        else:
+            self._working_caps.pop(self._normalize(provider), None)
 
     def _make_adapter(self, provider: str, api_key: str):
         norm = self._normalize(provider)
@@ -424,6 +458,15 @@ class ProviderPool:
         if norm == "g4f":
             from src.providers.g4f_provider import G4FProvider
             return G4FProvider()
+        if norm == "nvidia":
+            from src.providers.nvidia_provider import NvidiaProvider
+            return NvidiaProvider(api_key)
+        if norm == "nvidia":
+            from src.providers.nvidia_provider import NvidiaProvider
+            return NvidiaProvider(api_key)
+        if norm == "vercel":
+            from src.providers.vercel_provider import VercelProvider
+            return VercelProvider(api_key)
         from src.providers.openrouter_provider import OpenRouterProvider
         return OpenRouterProvider(api_key)
 
@@ -433,7 +476,7 @@ class ProviderPool:
         db_keys = await key_store.list_api_keys(user_id)
         
         # Check common providers
-        for provider in ["gemini", "groq", "openrouter", "ollama", "g4f"]:
+        for provider in ["gemini", "groq", "openrouter", "ollama", "g4f", "vercel", "nvidia"]:
             # Check env keys
             env_key = os.environ.get(f"{provider.upper()}_API_KEY", "")
             if env_key.strip():

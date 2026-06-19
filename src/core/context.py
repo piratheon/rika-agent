@@ -50,7 +50,7 @@ class ContextBuilder:
             from src.tools.workspace import get_workspace_path
             workspace = str(get_workspace_path(getattr(cfg, "workspace_path", None)))
         except Exception:
-            workspace = "~/.Rika-Workspace"
+            workspace = "~/.rika/shared"
 
         # Slim context — ~40 tokens vs ~120 for the full version
         lines = [

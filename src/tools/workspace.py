@@ -1,6 +1,6 @@
 """Agent workspace management.
 
-~/.Rika-Workspace is the agent's private sandbox:
+~/.rika/shared is the agent's private sandbox:
   - All shell commands run with cwd=workspace by default
   - Agent uses it freely for temp files, analysis, scripts, etc.
   - Never touches system paths unless the user explicitly requests it
@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 
 from src.utils.logger import logger
 
-_DEFAULT_WORKSPACE = "~/.Rika-Workspace"
+_DEFAULT_WORKSPACE = "~/.rika/shared"
 
 
 def get_workspace_path(configured: Optional[str] = None) -> Path:

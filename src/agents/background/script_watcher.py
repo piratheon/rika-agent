@@ -3,7 +3,7 @@
 This is the key missing piece for fully-agentic background monitoring.
 
 Flow:
-  1. Agent writes a monitoring script to ~/.Rika-Workspace/watchers/<id>.py (or .sh)
+  1. Agent writes a monitoring script to ~/.rika/shared/watchers/<id>.py (or .sh)
   2. ScriptWatcher executes it on every interval
   3. If the script exits non-zero OR outputs a line starting with "ALERT:",
      a WakeSignal is fired with the full output as context
@@ -16,7 +16,7 @@ The script protocol:
   - Print "ALERT: <message>" on any line = always fires (even exit 0)
   - Print "METRIC: <key>=<value>" to record time-series data (future)
 
-Agent-written scripts live in: ~/.Rika-Workspace/watchers/
+Agent-written scripts live in: ~/.rika/shared/watchers/
 """
 from __future__ import annotations
 

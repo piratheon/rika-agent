@@ -43,7 +43,7 @@ class Config(BaseModel):
     enable_web_ui: bool = False
     enable_command_security: bool = True
     command_security_level: str = "standard"
-    workspace_path: str = "~/.Rika-Workspace"
+    workspace_path: str = "~/.rika/shared"
     workspace_max_size_mb: int = 500
     log_level: str = "info"
     default_model: str = "gemini-2.0-flash"
@@ -53,10 +53,41 @@ class Config(BaseModel):
     # Code sandbox isolation level (0=RestrictedPython, 1=ulimit, 2=Docker)
     sandbox_level: int = 0
 
+    # Provider retry policy
+    provider_max_retries: int = 2       # retries per provider on transient errors
+    provider_retry_delay: float = 2.0   # base delay in seconds (doubles each attempt)
+
+    # Provider retry policy
+    provider_max_retries: int = 2       # retries per provider on transient errors
+    provider_retry_delay: float = 2.0   # base delay in seconds (doubles each attempt)
+
     ollama_enabled: bool = False
     ollama_base_url: str = "http://localhost:11434"
     ollama_default_model: str = "llama3.2"
     g4f_enabled: bool = False
+
+    # Vercel AI Gateway
+    vercel_enabled: bool = False
+    vercel_model: str = "openai/gpt-4o-mini"
+    vercel_auto_detect: bool = True   # auto-add to priority when VERCEL=1
+
+    # NVIDIA NIM (auto-detected from NVIDIA_API_KEY)
+    nvidia_enabled: bool = False
+    nvidia_model: str = "meta/llama-3.1-70b-instruct"
+    nvidia_auto_detect: bool = True
+
+    # NVIDIA NIM (auto-detected from NVIDIA_API_KEY)
+    nvidia_enabled: bool = False
+    nvidia_model: str = "meta/llama-3.1-70b-instruct"
+    nvidia_auto_detect: bool = True
+
+    # Vercel Postgres (auto-detected from POSTGRES_URL env var)
+    vercel_postgres_enabled: bool = False
+    vercel_postgres_pool_min: int = 2
+    vercel_postgres_pool_max: int = 10
+
+    # Vercel KV / Upstash Redis (auto-detected from KV_REST_API_URL)
+    vercel_kv_enabled: bool = False
     
     # Per-provider model configuration (fallbacks if not set)
     groq_model: str = "llama-3.3-70b-versatile"
@@ -89,7 +120,7 @@ class Config(BaseModel):
         "4. TOOLS require background watchers: For tool execution (web_search, shell commands, etc.),\n"
         "   the user must have active watchers. Suggest /watch or /autowatch if they need tools.\n"
         "5. NO HALLUCINATION: If a tool fails or isn't available, be honest. Never fabricate results.\n"
-        "6. WORKSPACE: Your sandbox is ~/.Rika-Workspace (path in runtime context).\n"
+        "6. WORKSPACE: Your sandbox is ~/.rika/shared (path in runtime context).\n"
         "   Write temp files, scripts, and analysis artifacts there by default.\n"
         "7. COMMAND SECURITY: Destructive commands are blocked automatically.\n"
         "   Prefix medium-risk commands with 'CONFIRM: ' after warning the user.\n"
@@ -97,6 +128,9 @@ class Config(BaseModel):
         "   call declare_step(title=\"...\") first. After completion call\n"
         "   declare_step(title=\"...\", status=\"done\") or status=\"failed\".\n"
         "   Keep titles short and action-oriented: 'Creating backend', not 'I will now create...'\n"
+        "9. FINISHING: When you have a final answer, you MUST call end_thinking(message=\"...\").\n"
+        "   This is the ONLY valid way to end the processing loop.\n"
+        "   NEVER produce raw text output without a tool call.\n"
     )
 
     def get_tools_prompt(self) -> str:
@@ -126,7 +160,6 @@ class Config(BaseModel):
         return (
             "\n--- AVAILABLE TOOLS ---\n"
             + "\n".join(tools)
-            + "\n\nTo call a tool: TOOL: tool_name | QUERY: your query"
         )
 
     def get_system_prompt_for_fc(self) -> str:
@@ -152,6 +185,23 @@ class Config(BaseModel):
         p = Path(path)
         data = json.loads(p.read_text()) if p.exists() else {}
         cfg = cls(**data)
+
+        # Auto-detect Vercel deployment and prepend vercel to provider priority
+        import os as _os
+        _on_vercel = _os.environ.get("VERCEL", "") == "1" or bool(
+            _os.environ.get("VERCEL_ENV", "")
+        )
+        _has_vercel_key = bool(_os.environ.get("VERCEL_API_KEY", "").strip())
+        if cfg.nvidia_auto_detect and _os.environ.get("NVIDIA_API_KEY", "").strip():
+            if "nvidia" not in cfg.default_provider_priority:
+                cfg.default_provider_priority = ["nvidia"] + cfg.default_provider_priority
+            cfg.nvidia_enabled = True
+        if cfg.vercel_auto_detect and _on_vercel and _has_vercel_key:
+            if "vercel" not in cfg.default_provider_priority:
+                cfg.default_provider_priority = [
+                    "vercel"
+                ] + cfg.default_provider_priority
+            cfg.vercel_enabled = True
         soul = Path("soul.md")
         identity = (
             soul.read_text(encoding="utf-8")
