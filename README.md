@@ -22,6 +22,7 @@
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](docker-compose.yml)
 [![SQLite](https://img.shields.io/badge/Storage-SQLite_%2B_Qdrant-003B57?style=flat-square&logo=sqlite&logoColor=white)](#architecture)
 [![Security](https://img.shields.io/badge/Keys-AES--256--GCM-dc2626?style=flat-square&logo=keepassxc&logoColor=white)](#security)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/piratheon/rika-agent)
 
 **Online Providers:**
 
