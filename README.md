@@ -20,7 +20,7 @@
 [![Telegram](https://img.shields.io/badge/Telegram-Bot_API-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://core.telegram.org/bots)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](docker-compose.yml)
-[![SQLite](https://img.shields.io/badge/Storage-SQLite_%2B_Qdrant-003B57?style=flat-square&logo=sqlite&logoColor=white)](#architecture)
+[![SQLite](https://img.shields.io/badge/Storage-SQLite_%2F_Postgres-003B57?style=flat-square&logo=sqlite&logoColor=white)](#architecture)
 [![Security](https://img.shields.io/badge/Keys-AES--256--GCM-dc2626?style=flat-square&logo=keepassxc&logoColor=white)](#security)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/piratheon/rika-agent)
 
@@ -36,8 +36,9 @@
 </div>
 
 ---
-
-> **rika-agent** is the evolution of [Rikka-Bot](https://github.com/piratheon/rika-agent/releases/tag/v2.0.0). Same soul, continuously refined architecture. v2.1.8 ships JSON function calling, background system monitoring, a three-level code sandbox, vision input, file delivery, token-efficient context, Ollama/G4F/NVIDIA NIM/Vercel AI support, automatic provider failover with countdown retry, and Postgres backend support — running entirely on your own server, with your data staying yours.
+> **rika-agent** is a privacy first open source agentic system that you can control via Telegram (using a bot) and soon via other interfaces.
+ 
+>v2.1.9 ships JSON-native function calling, provider failover with live countdown UX, a three-level code sandbox, background system monitoring, vision input, file delivery, encrypted memory, and support for Groq / Gemini / OpenRouter / NVIDIA NIM / Vercel AI / Ollama / G4F — running entirely on your own server, with your data staying yours.
 
 ---
 
@@ -67,21 +68,23 @@ No copy-paste. No switching tabs. It just does it.
 <td width="50%">
 
 **Core agent**
-- JSON function calling via native provider APIs — no regex parsing
-- Multi-turn ReAct loop (up to 8 tool calls per request)
-- Text-protocol fallback when function calling unavailable
-- 3-tier complexity classifier (skips LLM call for greetings)
+- JSON function calling via native provider APIs — no text protocol
+- Multi-turn ReAct loop (up to 20 tool calls per request)
+- Mandatory `end_thinking` exit — responses are never delivered mid-thought
+- Automatic correction loop when LLM forgets to use a tool call
+- 3-tier complexity classifier (skips orchestration for simple queries)
 - Per-user concurrency limit (max 2 simultaneous tasks)
 
 </td>
 <td width="50%">
 
 **Providers**
-- Gemini, NVIDIA, Groq, OpenRouter, Vercel — key rotation with LRU selection
+- Gemini, Groq, OpenRouter, NVIDIA NIM, Vercel AI — key rotation with LRU selection
 - Ollama — local models, zero cost, zero data egress
-- G4F — free endpoints (GPT-4o, Claude, Llama), no key needed
+- G4F — free endpoints (GPT-4o, Llama), no key needed
+- Live 30s countdown with **Stop / Retry now** buttons when all providers fail
 - Blacklist + quota-reset scheduling per provider
-- Per-provider locks prevent thundering-herd races
+- Per-provider schema cap and tool-count floor so function calling never degrades to zero
 
 </td>
 </tr>
@@ -104,14 +107,14 @@ No copy-paste. No switching tabs. It just does it.
 <td>
 
 **Tools**
-- `web_search` — DuckDuckGo, no API key
+- `web_search` — DuckDuckGo, no API key, bot-detection fallback
 - `wikipedia_search` — MediaWiki REST API
 - `curl` — fetch any URL, stripped to readable text
 - `run_shell_command` — host shell, cwd = workspace
 - `run_python` — configurable isolation sandbox
 - `send_file` — deliver workspace files to Telegram
 - `list_workspace` — browse the agent's sandbox
-- `save_memory` / `get_memories` / `save_skill`
+- `save_memory` / `get_memories` / `save_skill` — per-user, isolated
 - `delegate_task` — spawn a research sub-agent
 
 </td>
@@ -120,20 +123,21 @@ No copy-paste. No switching tabs. It just does it.
 <td>
 
 **Security**
+- **Owner-only auth gate** — `OWNER_USER_ID` in `.env` limits the bot to one Telegram user. All other messages are silently dropped. Implemented as a PTB TypeHandler at group=-1: zero per-handler code.
 - AES-256-GCM encryption for all stored API keys
 - 22-rule shell command firewall — pure Python, zero AI tokens
   - **CRITICAL**: `rm -rf /`, fork bombs, disk wipes → blocked unconditionally
   - **HIGH**: kill init, flush iptables → blocked in standard/strict
   - **MEDIUM**: `curl | bash`, `sudo su` → `CONFIRM:` prefix to override
-- File delivery path-traversal protection
-- Access control via `allowed_user_ids`
+  - Secondary structural block: `$()`, backticks, `;bash/curl/rm` chains → always blocked
+- File delivery path-traversal protection (`Path.resolve()` + `is_relative_to()`)
 
 </td>
 <td>
 
 **Memory & context**
 - Qdrant vector store — semantic recall across sessions
-- Per-user key-value memory (facts, preferences, skills)
+- Per-user key-value memory (facts, preferences, skills) — fully isolated
 - Token-efficient injection: pinned (max 5) + relevant (top 4) only
 - Memory pinning: `/pinmemory` / `/unpinmemory` commands
 - Auto-summarization when context window fills
@@ -147,13 +151,15 @@ No copy-paste. No switching tabs. It just does it.
 
 **Vision**
 - Send any photo → bot downloads, base64-encodes, sends to provider
-- Gemini (native multimodal) and OpenRouter (vision models)
+- Gemini (native multimodal), OpenRouter (vision models), NVIDIA NIM
 - Caption becomes the query; no caption = full description
 
 </td>
 <td>
 
 **UX**
+- Live countdown with **⏹ Stop** and **↩ Retry now** buttons during provider failures
+- `/stop` command and Stop button reliably cancel the active asyncio task
 - LiveBubble™ — throttled Telegram message edits with Braille spinner
 - `AGENT_NAME=lain` in `.env` — name your agent anything you want
 - `/reload` hot-reloads config + registry without restart
@@ -176,7 +182,7 @@ cd rika-agent
 bash scripts/bot_setup.sh
 ```
 
-The setup wizard handles everything: bot token, agent name, provider keys, sandbox level detection, optional Ollama/G4F configuration, and database migration. When done:
+The setup wizard handles everything: bot token, owner Telegram ID, agent name, provider keys, sandbox level detection, optional Ollama/G4F/NVIDIA/Vercel configuration, and database migration. When done:
 
 ```bash
 bash scripts/start.sh
@@ -184,7 +190,7 @@ bash scripts/start.sh
 
 **Docker:**
 ```bash
-cp .env.template .env   # fill TELEGRAM_BOT_TOKEN and BOT_ENCRYPTION_KEY
+cp .env.template .env   # fill TELEGRAM_BOT_TOKEN, BOT_ENCRYPTION_KEY, OWNER_USER_ID
 docker compose up -d
 docker compose logs -f
 ```
@@ -200,30 +206,32 @@ docker compose logs -f
 TELEGRAM_BOT_TOKEN=
 BOT_ENCRYPTION_KEY=   # generate: python3 -c "import secrets; print(secrets.token_hex(32))"
 
-# Owner / auth
-OWNER_USER_ID=        # your Telegram ID — bot will only respond to this user
+# Security — strongly recommended for any non-local deployment
+OWNER_USER_ID=        # your Telegram user ID (message @userinfobot to find it)
+                      # if unset, the bot responds to ALL Telegram users
 
 # Optional
 DATABASE_PATH=./data/rk.db
-AGENT_NAME=rika       # display name (purely cosmetic)
+AGENT_NAME=rika       # display name — purely cosmetic
 
-# Provider keys (can also be added later via /addkey in Telegram)
+# Provider keys (can also be added later with /addkey in Telegram)
 GEMINI_API_KEY=
 GROQ_API_KEY=
 OPENROUTER_API_KEY=
-NVIDIA_API_KEY=       # auto-enables NVIDIA NIM when set
-VERCEL_API_KEY=       # Vercel AI Gateway (also set VERCEL=1)
+NVIDIA_API_KEY=       # auto-enables NVIDIA NIM when set (nvapi-...)
+VERCEL_API_KEY=       # Vercel AI Gateway — also set VERCEL=1
+VERCEL=1
 
-# Postgres backend (optional — uses SQLite if unset)
+# Optional: Postgres backend (SQLite is used if unset)
 POSTGRES_URL=         # postgresql://user:pass@host:5432/db
                       # pip install asyncpg
 
-# Vercel KV / Upstash Redis (optional)
+# Optional: Vercel KV / Upstash Redis
 KV_REST_API_URL=
 KV_REST_API_TOKEN=
 ```
 
-> `AGENT_NAME` is purely cosmetic — the project name stays `rika-agent`.
+> **`BOT_ENCRYPTION_KEY` is critical.** All stored API keys are encrypted with it. If you lose it, stored keys are unrecoverable. Back it up separately from the database.
 
 ### `config.json` — behavior
 
@@ -238,6 +246,7 @@ KV_REST_API_TOKEN=
   "command_security_level": "standard",
 
   "workspace_path": "~/.rika/shared",
+  "workspace_max_size_mb": 500,
 
   "provider_max_retries": 2,
   "provider_retry_delay": 2.0,
@@ -250,7 +259,7 @@ KV_REST_API_TOKEN=
   "g4f_model": "MiniMaxAI/MiniMax-M2.5",
 
   "nvidia_enabled": false,
-  "nvidia_model": "meta/llama-3.1-70b-instruct",
+  "nvidia_model": "z-ai/glm-5.1",
   "nvidia_auto_detect": true,
 
   "vercel_enabled": false,
@@ -269,9 +278,11 @@ KV_REST_API_TOKEN=
 }
 ```
 
+> Existing `config.json` files work without modification. All new fields have safe defaults.
+
 ### `soul.md` — personality
 
-The agent's tone, instructions, and character. Loaded at startup. Gitignored by default — edit freely without touching the codebase. Changes take effect on `/reload` or within 30 seconds.
+The agent's tone, instructions, and character. Loaded at startup. Gitignored by default. Changes take effect on `/reload` or within 30 seconds.
 
 ```bash
 cp soul.md.template soul.md
@@ -289,12 +300,19 @@ $EDITOR soul.md
 | **Gemini** | Yes (generous) | Best multimodal, 1M context, native vision |
 | **Groq** | Yes | Fastest inference — llama3.3-70b, mixtral |
 | **OpenRouter** | Pay-per-token | 200+ models including GPT-4o, Claude 3.5 |
-| **NVIDIA NIM** | Free credits | llama-3.1-70b, nemotron-4-340b, mixtral — set `NVIDIA_API_KEY` |
-| **Vercel AI** | Pay-per-token | AI Gateway — set `VERCEL_API_KEY` + `VERCEL=1` |
+| **NVIDIA NIM** | Free credits | nemotron-4-340b, llama-3.1-70b, mixtral-8x7b, gemma-7b |
+| **Vercel AI** | Pay-per-token | AI Gateway with automatic provider routing |
 
-Add via `/addkey` in Telegram or paste `provider:"key"` pairs directly in chat. Multiple keys per provider — the pool rotates automatically on rate limits or quota exhaustion.
+Add any key via `/addkey` in Telegram:
+```
+/addkey groq:"gsk_..."
+/addkey gemini:"AIza..."
+/addkey nvidia:"nvapi-..."
+/addkey openrouter:"sk-or-..."
+/addkey vercel:"..."
+```
 
-Provider priority and automatic failover is configurable via `default_provider_priority` in `config.json`.
+Multiple keys per provider — the pool rotates automatically on rate limits or quota exhaustion. If all providers fail, rika shows a 30-second live countdown with Stop and Retry now buttons rather than giving up.
 
 ### Ollama & G4F
 
@@ -343,15 +361,13 @@ Set `sandbox_level` in `config.json`:
 
 | Level | Name | What the agent can do | Requirements |
 |---|---|---|---|
-| `0` | RestrictedPython | Arithmetic and logic only. No file I/O, no imports. | None |
+| `0` | RestrictedPython | Arithmetic and logic only. No file I/O, no imports. Auto-escalates to Level 1 when code contains import statements. | None |
 | `1` | Process + ulimit | Full Python, installed packages, write to workspace. CPU/RAM capped. | Linux / macOS |
 | `2` | Docker | No network, memory-capped, ephemeral container. Maximum isolation. | Docker running |
 
 The setup wizard detects your environment and recommends the highest available level.
 
-> *"With great power comes great responsibility."* — Linus Torvalds
-
-Level 2 is strongly recommended for any multi-user or public deployment.
+> Level 2 is strongly recommended for any multi-user or public deployment.
 
 ---
 
@@ -395,10 +411,12 @@ Level 2 is strongly recommended for any multi-user or public deployment.
 |---|---|
 | `/start` | Initialize the bot |
 | `/help` | Full command list |
-| `/addkey provider:"key"` | Add an API key |
-| `/status` | Keys, model, active agents |
+| `/addkey provider:"key"` | Add an API key (groq, gemini, openrouter, nvidia, vercel, ollama) |
+| `/status` | Keys, model, active agents, vector store state |
 | `/providers` | Provider connectivity + Ollama model list |
+| `/stop` | Cancel the currently running task or countdown |
 | `/reload` | Hot-reload config (owner only) |
+| `/broadcast` | Send a message to all users (owner only) |
 | `/memory` | List stored memories and skills |
 | `/pinmemory <key>` | Pin a memory for always-injection (max 5) |
 | `/unpinmemory <key>` | Remove from always-injected list |
@@ -419,26 +437,30 @@ Level 2 is strongly recommended for any multi-user or public deployment.
 
 ```
 Telegram (app.py)
+├── _auth_gate ─────────► PTB TypeHandler group=-1 — rejects non-owner silently
 ├── Photo ──────────────► vision provider → reply
 ├── Simple ─────────────► ProviderPool.request_with_key() → reply
 └── Complex ────────────► orchestration loop
-                               ReAct (max 8 turns)
-                               request_with_tools() → StructuredResponse
-                               execute_tool(name, {args}) → result
-                               → optional file delivery
+                               while turn < max_turns (20):
+                                 request_with_key_structured() → StructuredResponse
+                                 if raw text → inject correction, retry
+                                 if end_thinking(msg) → deliver msg, exit
+                                 execute_tool(name, args) → result
+                                 → optional file delivery
+                               if all providers fail → live 30s countdown
 
 BackgroundAgentManager (singleton)
 ├── Watcher asyncio.Tasks  (pure Python, zero LLM tokens)
 └── WakeProcessor task     (1 LLM call per fired signal)
 
 ProviderPool (singleton)
-├── Keyed: Gemini · Groq · OpenRouter
-└── Keyless: Ollama · G4F
+├── Keyed:    Gemini · Groq · OpenRouter · NVIDIA NIM · Vercel AI
+└── Keyless:  Ollama · G4F
 
 Storage
-├── SQLite  users · api_keys [AES-256-GCM] · chat_history
-│           rika_memory · background_agents · wake_events · command_audit
-└── Qdrant  collection: collective_unconscious
+├── SQLite / Postgres  users · api_keys [AES-256-GCM] · chat_history
+│                      rika_memory · background_agents · wake_events · command_audit
+└── Qdrant             collection: collective_unconscious
 ```
 
 ---
@@ -453,83 +475,99 @@ rika-agent/
 │   │   ├── agent_factory.py    ConcreteAgent — function-calling ReAct loop
 │   │   ├── agent_bus.py        parallel + dependency-ordered runner
 │   │   └── agent_models.py     AgentSpec, WakeSignal, BackgroundAgentConfig
-│   ├── bot/app.py              all handlers + orchestration loop
-│   ├── db/                     migrations, chat store, vector store, background store
+│   ├── bot/app.py              all handlers, auth gate, orchestration loop
+│   ├── core/
+│   │   ├── orchestrator.py     Orchestrator class (v2.2.0 target)
+│   │   ├── complexity.py       3-tier message classifier
+│   │   ├── context.py          per-turn context assembler
+│   │   ├── event_bus.py        SessionEvent pub/sub (v2.2.0 target)
+│   │   └── models.py           shared data structures
+│   ├── db/
+│   │   ├── connection.py       dual SQLite/Postgres backend
+│   │   ├── migrate.py          migration runner (idempotent)
+│   │   ├── pg_compat.py        asyncpg shim for SQLite-style queries
+│   │   ├── pg_migrate.py       consolidated Postgres schema
+│   │   ├── vercel_kv.py        Upstash Redis client
+│   │   ├── chat_store.py
+│   │   ├── key_store.py
+│   │   ├── background_store.py
+│   │   └── vector_store.py     Qdrant + fastembed
 │   ├── providers/
 │   │   ├── base_provider.py    StructuredResponse, ToolCall, abstract base
-│   │   ├── gemini_provider.py  function calling + vision
-│   │   ├── groq_provider.py    function calling
+│   │   ├── gemini_provider.py  function calling + vision + Part wrappers
+│   │   ├── groq_provider.py    function calling + enum stripping
 │   │   ├── openrouter_provider.py
+│   │   ├── nvidia_provider.py  NVIDIA NIM (OpenAI-compatible)
+│   │   ├── vercel_provider.py  Vercel AI Gateway (OpenAI-compatible)
 │   │   ├── ollama_provider.py  local LLM
 │   │   ├── g4f_provider.py     free endpoints
-│   │   └── provider_pool.py    singleton, key rotation, failover
-│   └── tools/
-│       ├── schemas.py          JSON Schema for all 11 tools
-│       ├── sandbox.py          3-level code isolation
-│       ├── command_security.py 22-rule shell firewall
-│       ├── shell_tool.py       async shell + audit log
-│       └── web_search_tool.py  DuckDuckGo scraper
+│   │   └── provider_pool.py    singleton, key rotation, cap enforcement, failover
+│   ├── tools/
+│   │   ├── schemas.py          JSON Schema for all tools (including end_thinking)
+│   │   ├── sandbox.py          3-level code isolation
+│   │   ├── command_security.py 22-rule shell firewall
+│   │   ├── shell_tool.py       async shell + secondary injection block + audit log
+│   │   ├── web_search_tool.py  DuckDuckGo scraper with GET fallback
+│   │   └── curl_tool.py        URL fetch (raises on 5xx only)
+│   └── utils/
+│       ├── parse_keys.py       /addkey parser (all 7 providers)
+│       └── retry.py            exponential backoff utility
 ├── scripts/
-│   ├── bot_setup.sh            interactive wizard
+│   ├── bot_setup.sh            interactive setup wizard
 │   └── start.sh                pre-flight + launch
-├── config.json                 runtime config (no secrets)
-├── soul.md.template            agent personality starting point
-├── .env.template               all env vars documented
+├── config.json.template
+├── soul.md.template
+├── .env.template
 ├── docker-compose.yml
+├── ROADMAP.md
 └── README.md
 ```
 
 ---
 
-## Changelog
-
-### v2.1.5 → v2.1.8
-
-| Area | Change |
-|------|--------|
-| **Orchestration** | `end_thinking(message)` is now the only valid loop exit — prevents mid-thought responses reaching the user |
-| **Provider failover** | 30-second countdown with live progress bar and Stop / Retry now buttons instead of error message on rate limit |
-| **Provider failover** | Auto-retry on timeout and 403 errors with exponential backoff before switching providers |
-| **Stop button** | Fixed — now reliably cancels the active asyncio task and updates the message |
-| **Vector memory** | Qdrant `add()` / `query()` replaced with `upsert()` / `query_points()` — no more deprecation warnings |
-| **NVIDIA NIM** | New provider — llama-3.1-70b-instruct, nemotron-4-340b, mixtral, gemma-7b. Auto-enabled via `NVIDIA_API_KEY` |
-| **Vercel AI** | New provider — AI Gateway with automatic routing. Auto-enabled via `VERCEL_API_KEY` + `VERCEL=1` |
-| **Postgres** | Optional Postgres backend via `POSTGRES_URL`. SQLite remains default. |
-| **Vercel KV** | Optional Upstash Redis client for session caching |
-| **Shutdown** | Background tasks (unblacklist loop, wake processor) cancelled cleanly on SIGINT |
-| **Process log** | `declare_step` no longer generates empty lines in the work log |
-
----
 
 ## Security
 
 <details>
+<summary>Owner-only auth gate</summary>
+
+Set `OWNER_USER_ID` in `.env` (your Telegram user ID — send any message to [@userinfobot](https://t.me/userinfobot) to find it). The bot will silently ignore all messages from anyone else — no reply, no error, no indication the bot exists.
+
+```env
+OWNER_USER_ID=123456789
+```
+
+If `OWNER_USER_ID` is unset, the bot responds to all Telegram users. This is fine for local development but should not be used if the bot is reachable from the internet.
+
+</details>
+
+<details>
 <summary>API key encryption</summary>
 
-AES-256-GCM. Generate your key:
+AES-256-GCM. Generate your encryption key:
 ```bash
 python3 -c "import secrets; print(secrets.token_hex(32))"
 ```
-The key never touches the database. If `.env` is gone, stored keys are unrecoverable.
+The key never touches the database. If `.env` is lost, stored keys are unrecoverable.
 
 </details>
 
 <details>
 <summary>Shell command firewall</summary>
 
-22 rules evaluated before every `run_shell_command` call. Zero AI tokens, zero latency.
+22 rules evaluated before every `run_shell_command` call. Zero AI tokens, zero latency. Plus a secondary structural check that blocks `$()` subshell substitution, backtick substitution, and `;rm/curl/wget/bash` chains unconditionally regardless of security level.
 
 Three security levels in `config.json`:
 - `"standard"` — CRITICAL + HIGH blocked, MEDIUM needs `CONFIRM:` prefix
 - `"strict"` — also blocks `curl | bash`, `sudo su`, service-disabling
-- `"permissive"` — CRITICAL only (for trusted personal use)
+- `"permissive"` — CRITICAL only (trusted personal use only)
 
 </details>
 
 <details>
 <summary>File delivery</summary>
 
-`send_file` resolves symlinks and rejects any path outside `~/.rika/shared`. `../` traversal attempts are blocked and logged.
+`send_file` and `read_file` resolve symlinks and reject any path outside `~/.rika/shared` using `Path.resolve()` + `is_relative_to()`. The old `lstrip("/").replace("..")` approach is gone — the new check is not bypassable with `....//` tricks.
 
 </details>
 
@@ -543,6 +581,6 @@ Issues and PRs welcome. For security issues, open a private issue rather than di
 
 <div align="center">
 
-Built in Zagora, Morocco, by [piratheon](https://github.com/piratheon) ; inspired by the works of [Lain](https://lainchan.org/), [Rei](https://www.reddit.com/r/ReiAyanami/), and countless cyberpunk dreamers xD!
+Built in Zagora, Morocco, by [piratheon](https://github.com/piratheon) — inspired by the works of [Lain](https://lainchan.org/), [Rei](https://www.reddit.com/r/ReiAyanami/), and countless cyberpunk dreamers xD!
 
 </div>

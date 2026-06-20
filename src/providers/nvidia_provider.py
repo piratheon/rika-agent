@@ -1,6 +1,6 @@
 """NVIDIA NIM provider — OpenAI-compatible API.
 
-NVIDIA NIM exposes hosted models (Llama, Mistral, Nemotron, Gemma, Phi-3)
+NVIDIA NIM exposes hosted models (Llama, Mistral, Nemotron, Gemma, GLM, Phi-3)
 via an OpenAI-compatible REST API at https://integrate.api.nvidia.com/v1
 
 Environment variables:
@@ -16,150 +16,136 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List
 
 import httpx
 
+from src.providers.base_provider import (
+    BaseProvider,
+    ProviderAuthError,
+    ProviderQuotaError,
+    ProviderTransientError,
+    StructuredResponse,
+)
 from src.utils.logger import logger
 
-NVIDIA_BASE_URL = os.environ.get(
-    "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
-).rstrip("/")
 
-SUPPORTS_FUNCTION_CALLING = True
-SUPPORTS_STREAMING = True
+class NvidiaProvider(BaseProvider):
+    """NVIDIA NIM adapter — matches the BaseProvider contract used by
+    ProviderPool (request, request_with_tools, stream, test_key).
 
+    Previously this was a standalone class with chat()/chat_with_tools()/
+    stream_chat() methods that did not match the interface ProviderPool
+    actually calls (request/request_with_tools/stream/test_key). Every call
+    to adapter.test_key() raised AttributeError, was swallowed by a bare
+    except Exception: pass in get_healthy_key(), and silently reported the
+    key as invalid regardless of whether it was actually valid.
+    """
 
-def _headers(api_key: str) -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    SUPPORTS_FUNCTION_CALLING = True
 
+    def __init__(self, api_key: str, provider_name: str = "nvidia"):
+        super().__init__(api_key, provider_name)
+        self.base_url = os.environ.get(
+            "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
+        ).rstrip("/")
 
-def _raise_for_status(r: httpx.Response) -> None:
-    if r.status_code == 401:
-        raise ValueError("NVIDIA NIM 401: invalid API key")
-    if r.status_code == 429:
-        raise ValueError("NVIDIA NIM 429: rate limit exceeded")
-    if r.status_code >= 400:
-        raise ValueError(f"NVIDIA NIM HTTP {r.status_code}: {r.text[:200]}")
+    def _headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
 
+    def _raise(self, r: httpx.Response) -> None:
+        if r.status_code == 401:
+            raise ProviderAuthError(f"NVIDIA NIM auth: {r.text[:200]}")
+        if r.status_code == 429:
+            raise ProviderQuotaError(f"NVIDIA NIM quota: {r.text[:200]}")
+        if r.status_code >= 400:
+            raise ProviderTransientError(f"NVIDIA NIM {r.status_code}: {r.text[:200]}")
 
-async def request(
-    api_key: str,
-    model: str,
-    messages: List[Dict[str, Any]],
-    temperature: float = 0.7,
-    max_tokens: int = 2048,
-) -> Dict[str, Any]:
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-    async with httpx.AsyncClient(timeout=90.0) as client:
-        r = await client.post(
-            f"{NVIDIA_BASE_URL}/chat/completions",
-            json=payload,
-            headers=_headers(api_key),
-        )
-        _raise_for_status(r)
-        data = r.json()
-        return {"output": data["choices"][0]["message"]["content"] or "", "raw": data}
+    async def request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            r = await client.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                headers=self._headers(),
+            )
+            self._raise(r)
+            data = r.json()
+            content = self._extract_openai_content(data.get("choices", []))
+            return {"output": content or "", "usage": data.get("usage", {})}
 
+    async def request_with_tools(
+        self, payload: Dict[str, Any], tool_schemas: List[Any]
+    ) -> StructuredResponse:
+        payload = dict(payload)
+        if tool_schemas:
+            payload["tools"] = [s.to_openai() for s in tool_schemas]
+            payload["tool_choice"] = "auto"
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            r = await client.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                headers=self._headers(),
+            )
+            self._raise(r)
+            data = r.json()
+            choices = data.get("choices", [])
+            tool_calls = self._parse_openai_tool_calls(choices) if tool_schemas else []
+            content = self._extract_openai_content(choices) or ""
+            return StructuredResponse(
+                content=content,
+                tool_calls=tool_calls,
+                usage=data.get("usage", {}),
+                model=data.get("model", ""),
+            )
 
-async def request_with_tools(
-    api_key: str,
-    model: str,
-    messages: List[Dict[str, Any]],
-    tools: Optional[List[Dict[str, Any]]] = None,
-    temperature: float = 0.7,
-    max_tokens: int = 2048,
-) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-    if tools:
-        payload["tools"] = tools
-        payload["tool_choice"] = "auto"
-    async with httpx.AsyncClient(timeout=90.0) as client:
-        r = await client.post(
-            f"{NVIDIA_BASE_URL}/chat/completions",
-            json=payload,
-            headers=_headers(api_key),
-        )
-        _raise_for_status(r)
-        return r.json()
+    async def stream(self, payload: Dict[str, Any]) -> AsyncGenerator[str, None]:
+        payload = dict(payload)
+        payload["stream"] = True
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                headers=self._headers(),
+            ) as r:
+                self._raise(r)
+                async for line in r.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    raw = line[6:].strip()
+                    if raw == "[DONE]":
+                        break
+                    try:
+                        delta = json.loads(raw)["choices"][0].get("delta", {})
+                        if content := delta.get("content"):
+                            yield content
+                    except Exception:
+                        continue
 
+    async def test_key(self) -> bool:
+        """Validate the key with a minimal real completion call.
 
-async def stream(
-    api_key: str,
-    model: str,
-    messages: List[Dict[str, Any]],
-    temperature: float = 0.7,
-    max_tokens: int = 2048,
-):
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": True,
-    }
-    async with httpx.AsyncClient(timeout=90.0) as client:
-        async with client.stream(
-            "POST",
-            f"{NVIDIA_BASE_URL}/chat/completions",
-            json=payload,
-            headers=_headers(api_key),
-        ) as r:
-            _raise_for_status(r)
-            async for line in r.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:].strip()
-                if data_str == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data_str)
-                    text = chunk["choices"][0].get("delta", {}).get("content") or ""
-                    if text:
-                        yield text
-                except Exception:
-                    continue
-
-
-async def test_key(api_key: str) -> bool:
-    try:
-        await request(
-            api_key=api_key,
-            model="meta/llama-3.1-8b-instruct",
-            messages=[{"role": "user", "content": "hi"}],
-            max_tokens=1,
-        )
-        return True
-    except Exception as exc:
-        logger.warning("nvidia_key_test_failed", error=str(exc))
-        return False
-
-
-class NvidiaProvider:
-    """Class-based adapter matching the project's provider pattern."""
-
-    def __init__(self, api_key: str) -> None:
-        self.api_key = api_key
-
-    async def chat(self, model: str, messages: list, **kwargs) -> Dict[str, Any]:
-        return await request(self.api_key, model, messages, **kwargs)
-
-    async def chat_with_tools(self, model: str, messages: list, tools: list = None, **kwargs) -> Dict[str, Any]:
-        return await request_with_tools(self.api_key, model, messages, tools=tools, **kwargs)
-
-    async def stream_chat(self, model: str, messages: list, **kwargs):
-        async for chunk in stream(self.api_key, model, messages, **kwargs):
-            yield chunk
+        NIM does not expose a lightweight /models endpoint suitable for key
+        validation the way OpenRouter does, so a 1-token completion against
+        a small, reliably-hosted model is used instead.
+        """
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(
+                f"{self.base_url}/chat/completions",
+                json={
+                    "model": "meta/llama-3.1-8b-instruct",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 1,
+                },
+                headers=self._headers(),
+            )
+            if r.status_code == 200:
+                return True
+            if r.status_code == 401:
+                raise ProviderAuthError("NVIDIA NIM auth failed")
+            if r.status_code == 429:
+                raise ProviderQuotaError("NVIDIA NIM quota exceeded")
+            raise ProviderTransientError(f"NVIDIA NIM test: {r.status_code} {r.text[:200]}")
