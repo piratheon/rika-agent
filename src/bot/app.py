@@ -2099,6 +2099,21 @@ def build_application(config: Config):
         manager = BackgroundAgentManager.initialize(application.bot)
         await manager.start()
 
+        # Self-check: log which bot this token actually resolves to.
+        # Catches the common silent-failure mode where TELEGRAM_BOT_TOKEN
+        # belongs to a different bot than the one being messaged — polling
+        # succeeds, zero errors are logged, but no updates ever arrive.
+        try:
+            me = await application.bot.get_me()
+            logger.info(
+                "bot_identity_confirmed",
+                username=f"@{me.username}",
+                bot_id=me.id,
+                first_name=me.first_name,
+            )
+        except Exception as exc:
+            logger.error("bot_identity_check_failed", error=str(exc))
+
     async def _post_shutdown(application) -> None:
         """Cancel background tasks on clean shutdown."""
         from src.agents.background.manager import BackgroundAgentManager
