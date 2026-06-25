@@ -7,8 +7,9 @@ MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 async def apply_migrations(db_path: str):
     # Route to Postgres migration when POSTGRES_URL is present
-    from src.db.connection import DB_BACKEND
-    if DB_BACKEND == "postgres":
+    # patch_db_backend: detect_backend_call
+    from src.db.connection import _detect_backend
+    if _detect_backend() == "postgres":
         from src.db.pg_migrate import apply_pg_migrations
         from src.db.connection import _get_pg_pool
         pool = await _get_pg_pool()
