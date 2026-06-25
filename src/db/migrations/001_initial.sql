@@ -1,4 +1,4 @@
--- Initial schema for Rikka Bot (Phase 1 minimal)
+-- Initial schema for Rika Agent (Phase 1 minimal)
 BEGIN TRANSACTION;
 
 CREATE TABLE IF NOT EXISTS users (

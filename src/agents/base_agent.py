@@ -9,10 +9,5 @@ class BaseAgent:
         self.status = "pending"
 
     async def run(self, context: dict) -> dict:
-        """Run the agent. Should be overridden by subclasses.
-
-        Returns a dict matching the agent's `output_schema`.
-        """
-        # Default behaviour: echo the prompt back
-        await asyncio.sleep(0)
-        return {"result": f"Agent {self.spec.name} ran with context."}
+        """Run the agent. Must be overridden by subclasses."""
+        raise NotImplementedError(f"{self.__class__.__name__} must implement run()")

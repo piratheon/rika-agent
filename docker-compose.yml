@@ -1,24 +1,18 @@
 services:
   bot:
     build: .
-    image: rikka-bot:latest
-    container_name: rikka_bot
+    image: rk-agent:latest
+    container_name: rk_agent
     restart: unless-stopped
     volumes:
       - ./data:/app/data
-      - ./rikka.log:/app/rikka.log
+      - ./logs:/app/logs
+      - ./soul.md:/app/soul.md:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file: .env
     environment:
-      # Required for Rikka to function
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - BOT_ENCRYPTION_KEY=${BOT_ENCRYPTION_KEY}
-      
-      # Optional configurations
-      - OWNER_USER_ID=${OWNER_USER_ID:-}
-      - GEMINI_DEFAULT_MODEL=${GEMINI_DEFAULT_MODEL:-gemini-2.0-flash}
-      - RIKKA_LOG_PATH=/app/rikka.log
-      - GROQ_QUOTA_RESET_UTC_HOUR=0
-      - GEMINI_QUOTA_RESET_UTC_HOUR=0
-      - OPENROUTER_QUOTA_RESET_UTC_HOUR=0
-
-    # Ensure log file exists so it can be mounted correctly
+      - DATABASE_PATH=/app/data/rk.db
+      - PYTHONUNBUFFERED=1
     init: true
+    ports:
+      - "${API_PORT:-5000}:${API_PORT:-5000}"

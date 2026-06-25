@@ -1,15 +1,38 @@
+# Core
 python-telegram-bot>=21.0
+flask>=3.0
 aiosqlite
 pydantic>=2.0
 structlog
 python-dotenv
 httpx
+cryptography
+APScheduler
+asyncpg
+
+# Providers
+google-genai
+
+# Vector memory
+qdrant-client
+fastembed
+
+# Tools
+RestrictedPython
+beautifulsoup4
+lxml
+
+# Optional: Discord
+# discord.py  (uncomment if using Discord interface)
+# Alternatively: pip install discord.py
+
+# Optional: Local LLM (no install needed for Ollama — it's HTTP-based)
+# Ollama itself runs as a separate process: https://ollama.com
+
+# Optional: Free providers (uncomment to enable)
+g4f
+
+# Dev / testing
 respx
 pytest
 pytest-asyncio
-cryptography
-APScheduler
-flake8
-google-genai
-googlesearch-python
-beautifulsoup4

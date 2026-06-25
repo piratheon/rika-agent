@@ -10,7 +10,7 @@ def test_encrypt_decrypt_roundtrip(monkeypatch):
     key = binascii.hexlify(b"\x11" * 32).decode()
     monkeypatch.setenv("BOT_ENCRYPTION_KEY", key)
 
-    plaintext = b"hello rikka"
+    plaintext = b"hello rika"
     blob = encrypt(plaintext)
     assert isinstance(blob, (bytes, bytearray))
     out = decrypt(blob)

@@ -1,6 +1,7 @@
 import logging
 import os
 import structlog
+from datetime import datetime
 
 
 def _ensure_log_dir(path: str):
@@ -9,14 +10,31 @@ def _ensure_log_dir(path: str):
         os.makedirs(d, exist_ok=True)
 
 
-LOG_PATH = os.environ.get("RIKKA_LOG_PATH", "./rikka.log")
-_ensure_log_dir(LOG_PATH)
+def _get_log_path():
+    # Format: logs/rk-[date]-[time:(hour-minute-second-ms)].log
+    now = datetime.now()
+    # ms is %f, we'll take first 3 digits for ms
+    ms = now.strftime("%f")[:3]
+    filename = now.strftime(f"rk-%Y%m%d-%H%M%S-{ms}.log")
+    path = os.path.join("logs", filename)
+    _ensure_log_dir(path)
+    return path
 
-# Configure stdlib logging to write to file
+
+LOG_PATH = _get_log_path()
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+
+# Configure stdlib logging
 handler = logging.FileHandler(LOG_PATH)
 handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
 root = logging.getLogger()
-root.setLevel(logging.INFO)
+root.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+
+# Silence noisy dependencies
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+
 if not any(isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', None) == os.path.abspath(LOG_PATH) for h in root.handlers):
     root.addHandler(handler)
 
@@ -39,4 +57,4 @@ def get_logger(name: str | None = None):
     return structlog.get_logger(name)
 
 
-logger = get_logger("rikka")
+logger = get_logger("app")

@@ -1,34 +1,47 @@
-# Rikka-Bot Exclusions
-
-# Core Plan (Internal)
-plan.md
-ToDo.md
+# Environment
+.env
+*.env
 
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.pyo
 .venv/
 venv/
-ENV/
-build/
+*.egg-info/
 dist/
+build/
 
-# Database
-data/rikka.db*
-*.db
-*.db-journal
-
-# Configuration & Secrets
-.env
-config.json
-.vscode/
-.idea/
-
-# Logs
-rikka.log*
+# Data and logs
+data/
+logs/
 *.log
+*.db
+*.sqlite
+
+# Vector DB
+data/vector_db/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Secrets
+soul.md
+config.json
+ToDo.md
+
+# Web UI (unimplemented)
+index.html
+rk-webui_demo.html
+
+# Docs (added manually to GitHub later)
+docs/
 
 # OS
 .DS_Store
 Thumbs.db
+# Etc ...
+.*_backup*/*

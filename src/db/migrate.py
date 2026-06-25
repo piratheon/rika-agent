@@ -6,6 +6,15 @@ MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
 async def apply_migrations(db_path: str):
+    # Route to Postgres migration when POSTGRES_URL is present
+    from src.db.connection import DB_BACKEND
+    if DB_BACKEND == "postgres":
+        from src.db.pg_migrate import apply_pg_migrations
+        from src.db.connection import _get_pg_pool
+        pool = await _get_pg_pool()
+        await apply_pg_migrations(pool)
+        return
+
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(db_path) as conn:
         await conn.execute("PRAGMA foreign_keys = ON;")
@@ -30,7 +39,7 @@ async def apply_migrations(db_path: str):
             await conn.commit()
 
 
-def run_sync(db_path: str = "./data/rikka.db"):
+def run_sync(db_path: str = "./data/rk.db"):
     # Use asyncio.run() which is compatible with modern Python event loop policy
     asyncio.run(apply_migrations(db_path))
 

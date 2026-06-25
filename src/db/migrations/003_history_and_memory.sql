@@ -15,8 +15,8 @@ CREATE TABLE IF NOT EXISTS chat_summaries (
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
--- Rikka's persistent memory and skills
-CREATE TABLE IF NOT EXISTS rikka_memory (
+-- Rika's persistent memory and skills
+CREATE TABLE IF NOT EXISTS rika_memory (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     mem_key TEXT NOT NULL,

@@ -1,0 +1,359 @@
+{
+  "repo_notes": [
+    {
+      "content": "rika-agent is a single-user Telegram AI agent built on Python 3.12 / asyncio. It runs a ReAct reasoning loop with multi-provider LLM support (Groq, Gemini, OpenRouter, NVIDIA NIM, Vercel AI, Ollama, G4F), a three-level code sandbox, background system monitoring, and an encrypted SQLite-backed memory store. The project is intentionally single-binary with no external services required beyond a Telegram bot token and at least one LLM API key. Deployment options: bare-metal with the setup wizard, or Docker Compose. Current stable: v2.1.9. License: Apache 2.0."
+    }
+  ],
+  "pages": [
+    {
+      "title": "Overview",
+      "purpose": "High-level introduction: what rika-agent is, its design philosophy (single user, self-hosted, no cloud dependency), the six major subsystems (orchestration, provider layer, tool system, background monitoring, persistence, Telegram interface), and how they relate. Includes a system diagram and links to all child sections.",
+      "page_notes": [
+        {
+          "content": "Emphasise the single-user, privacy-first design. The agent runs entirely on the user's own server with encrypted key storage. No telemetry, no multi-tenant surface."
+        }
+      ]
+    },
+    {
+      "title": "Getting Started",
+      "purpose": "End-to-end setup guide: prerequisites (Python 3.12+, Docker optional), cloning the repo, running the setup wizard (bot_setup.sh), configuring .env and config.json, first-run verification via /status, and how to add LLM API keys with /addkey. Covers both Docker Compose and bare-metal paths.",
+      "parent": "Overview",
+      "page_notes": [
+        {
+          "content": "Include the OWNER_USER_ID requirement introduced in v2.1.9. Without it the bot accepts messages from any Telegram user. Point readers to the Security page for details."
+        }
+      ]
+    },
+    {
+      "title": "Configuration Reference",
+      "purpose": "Complete reference for all configuration surfaces: config.json schema (providers, sandbox level, workspace path, memory limits, feature flags, new v2.1.9 fields), .env variables (TELEGRAM_BOT_TOKEN, BOT_ENCRYPTION_KEY, OWNER_USER_ID, provider keys, POSTGRES_URL, KV_* vars), and the soul.md persona file format. Documents every field, its type, default value, and when it takes effect.",
+      "parent": "Overview",
+      "page_notes": [
+        {
+          "content": "New v2.1.9 config fields: provider_max_retries, provider_retry_delay, nvidia_enabled, nvidia_model, nvidia_auto_detect, vercel_enabled, vercel_model, vercel_auto_detect, vercel_postgres_enabled, vercel_kv_enabled. All are optional with safe defaults so existing config.json files work without modification."
+        }
+      ]
+    },
+    {
+      "title": "Security",
+      "purpose": "Comprehensive guide to rika-agent's security model: the owner-only auth gate (OWNER_USER_ID, _auth_gate TypeHandler at group=-1), how shell commands are validated (22-rule firewall + secondary structural injection block for $() / backticks / chained dangerous commands), path traversal protection in file tools (Path.resolve() + is_relative_to()), AES-256-GCM API key encryption, and operational hardening recommendations for production deployments.",
+      "parent": "Overview",
+      "page_notes": [
+        {
+          "content": "The auth gate was added in v2.1.9. _auth_gate() is registered as a PTB TypeHandler at group=-1, which means it runs before every other handler without requiring per-handler guards. If OWNER_USER_ID is unset the bot operates in open mode — document this clearly as a development-only configuration."
+        }
+      ]
+    },
+    {
+      "title": "Core Architecture",
+      "purpose": "Overview of the central orchestration engine, shared data models, and event system. Introduces the ReAct loop, thought_history structure, AgentState lifecycle, SessionEvent concepts, and how the five child subsystems connect. Includes the end_thinking exit contract and the _pending_content safety-valve pattern introduced in v2.1.9.",
+      "page_notes": [
+        {
+          "content": "The mandatory end_thinking tool is the architectural cornerstone introduced in v2.1.8-v2.1.9. The orchestrator loop never exits on raw text — only on end_thinking(message=...). Document this contract clearly as it is the root fix for tool-leak and mid-thought response bugs."
+        }
+      ]
+    },
+    {
+      "title": "Orchestrator and ReAct Loop",
+      "purpose": "Deep dive into the run_orchestration_background() loop in app.py: the while turn < max_turns structure, thought_history management, provider failover sequence, tool dispatch, correction loop (_CORRECTION_WARNING injection when LLM outputs raw text), _pending_content deadlock guard (fires only when a fallback answer exists from the correction path), cancellation via _CANCEL_FLAGS / _STOP_EVENTS, and the process log bubble. Covers turn accounting: turn only increments on successful tool-call turns, not on correction retries or provider failures.",
+      "parent": "Core Architecture",
+      "page_notes": [
+        {
+          "content": "Document the _provider_retry counter and its interaction with _pending_content carefully. The same-turn retry limit (>= 3) only activates when _pending_content is not None. Pure quota exhaustion from turn 0 keeps the countdown running indefinitely — the user decides when to stop. This distinction prevents the deadlock guard from incorrectly aborting legitimate retries."
+        }
+      ]
+    },
+    {
+      "title": "Data Models and Event Bus",
+      "purpose": "Reference for all shared data structures in src/core/models.py and src/core/event_bus.py: AgentSpec, AgentState, ToolCall, ToolResult, WakeSignal, BackgroundAgentConfig, SessionEvent, EventType (THINKING, INTENT, TOOL_CALL, TOOL_RESULT, STEP_DONE, STEP_FAILED, MESSAGE, ERROR, CANCELLED). Covers the event bus publish/subscribe mechanism and how the Telegram WorkLogRenderer consumes the stream.",
+      "parent": "Core Architecture",
+      "page_notes": [
+        {
+          "content": "The EventBus infrastructure is already written. v2.2.0 wires it into the Telegram WorkLogRenderer to replace the LiveBubble spinner. Document current state (exists but not wired) to avoid confusion."
+        }
+      ]
+    },
+    {
+      "title": "Context Building and Complexity Classification",
+      "purpose": "Explains how runtime context is assembled per turn (ContextBuilder in src/core/context.py): pinned memories, relevant semantic memories from the vector store, active watcher summary, chat history, skill list. Then covers the classify_complexity() function: how it routes messages between the direct-reply path and full orchestration with tool schemas, the keyword list derivation from get_registry(), and the reroute mechanism when the direct-reply LLM uses text protocol.",
+      "parent": "Core Architecture",
+      "page_notes": [
+        {
+          "content": "The complexity classifier keyword list is currently hand-maintained in src/core/complexity.py. v2.2.6 will auto-derive it from get_registry() tool names and description keywords. Document this as a known limitation."
+        }
+      ]
+    },
+    {
+      "title": "Multi-Agent Bus",
+      "purpose": "Covers the AgentBus parallel and dependency-ordered runner in src/agents/agent_bus.py: how AgentSpec.depends_on drives wave-based execution, result sharing between agents, deadlock detection. Notes current status: AgentBus is implemented but not wired into app.py as of v2.1.9 — targeted for integration in v2.3.0.",
+      "parent": "Core Architecture",
+      "page_notes": [
+        {
+          "content": "Mark clearly as not yet active in production. The class exists and is tested in isolation but is not called from any handler in app.py. It will be wired in v2.3.0 as part of the delegate_task expansion."
+        }
+      ]
+    },
+    {
+      "title": "Telegram Bot Interface",
+      "purpose": "Overview of the Telegram-facing layer in src/bot/app.py: global auth gate (_auth_gate at group=-1), command dispatch, the two orchestration entry points (direct reply vs. full orchestration), photo/document handling, session state management (_ACTIVE_TASKS, _CANCEL_FLAGS, _RETRY_EVENTS, _STOP_EVENTS keyed by Telegram user_id), and the LiveBubble UI. Links to child pages for handlers, the work log renderer, and the retry countdown system.",
+      "page_notes": [
+        {
+          "content": "app.py is a 2100+ line monolith. Document this as a known architectural debt (M1 in the audit). Extraction into src/bot/handlers/ modules is planned for v2.2.5-v3.0.0. For now all 27 handlers live in this file."
+        }
+      ]
+    },
+    {
+      "title": "Command Handlers and Message Flow",
+      "purpose": "Detailed walkthrough of every Telegram command (/start, /help, /addkey, /deletekey, /status, /watch, /autowatch, /watchers, /stopwatch, /wakelog, /memory, /pinmemory, /unpinmemory, /deletememory, /stop, /reload, /broadcast, /cmdhistory, /cleanworkspace) and the message processing pipeline: auth gate → complexity classification → direct reply or orchestration dispatch → bubble render → final message delivery.",
+      "parent": "Telegram Bot Interface",
+      "page_notes": [
+        {
+          "content": "Document the /stop command and stop button inline interaction carefully: both set _CANCEL_FLAGS[_session_id] and _STOP_EVENTS[_session_id] so cancellation works whether the agent is mid-orchestration or mid-countdown. The session key is always the Telegram user_id (not the DB user_id)."
+        }
+      ]
+    },
+    {
+      "title": "LiveBubble and Work Log Renderer",
+      "purpose": "Explains the LiveBubble real-time status UI (throttled message edits, Braille spinner, tool/step display), the WorkLogRenderer in src/interfaces/telegram/work_log.py that converts SessionEvents into structured Telegram HTML, and how they will integrate with the event bus in v2.2.0. Documents current limitations: LiveBubble always shows the 'Processing request...' header regardless of task complexity.",
+      "parent": "Telegram Bot Interface",
+      "page_notes": [
+        {
+          "content": "The WorkLogRenderer is already written. v2.2.0 replaces LiveBubble calls in app.py with WorkLogRenderer consumption. Document the target output format: [+] Step title / * tool_name → result lines / final message below the collapsed work log card."
+        }
+      ]
+    },
+    {
+      "title": "Provider Countdown and Retry UX",
+      "purpose": "Documents the _show_retry_countdown() function: how all-provider failure is surfaced to the user (live 30s countdown with progress bar, Stop and Retry now inline buttons), the _RETRY_EVENTS / _STOP_EVENTS asyncio.Event mechanism for instant button response (FIRST_COMPLETED pattern), the _provider_retry counter, and the attempt-2+ 'consider adding more keys' hint. Explains why pure quota exhaustion (no _pending_content) never hits the retry cap.",
+      "parent": "Telegram Bot Interface",
+      "page_notes": [
+        {
+          "content": "The retry_now_handler is registered as a separate CallbackQueryHandler with pattern '^retry_now:'. The stop button during countdown sets _STOP_EVENTS[uid] which _show_retry_countdown() detects via asyncio.wait(FIRST_COMPLETED) within each 1-second tick — response is near-instant."
+        }
+      ]
+    },
+    {
+      "title": "LLM Provider Layer",
+      "purpose": "Overview of the multi-provider abstraction in src/providers/: ProviderPool singleton, key rotation, failover priority, error categorisation, and the individual provider adapters. Explains the provider priority list (config: default_provider_priority), how the pool is initialised, and how tool schemas are adapted per provider (Groq schema cap, enum stripping). Links to child pages.",
+      "page_notes": [
+        {
+          "content": "The provider layer is the most complex subsystem. Key invariant: every provider must implement request_with_key(payload) and request_with_key_structured(payload, schemas). test_key() is used by /status and /addkey validation."
+        }
+      ]
+    },
+    {
+      "title": "ProviderPool: Key Management and Failover",
+      "purpose": "Deep dive into ProviderPool in src/providers/provider_pool.py: _select_key() (LRU rotation by last_used_at, blacklist exclusion, env-var and DB key merge), error categorisation (_is_fatal_provider_error detects 429/quota/401/tool_use_failed/no-key, _is_retryable_provider_error detects timeout/403/network), retry with exponential backoff, _cap_tools() (floor at 2, end_thinking always first, halving on tool_use_failed), reset_tool_caps() called per message, the unblacklist APScheduler job, and TPM-aware 15-second sleep-and-retry.",
+      "parent": "LLM Provider Layer",
+      "page_notes": [
+        {
+          "content": "Known limitation (C3 in debt audit): _working_caps is process-global, not per-session. One user's tool_use_failed degrades the cap for all concurrent users. reset_tool_caps() per-message mitigates but does not eliminate this. Fix planned for v2.2.6."
+        }
+      ]
+    },
+    {
+      "title": "Provider Adapters",
+      "purpose": "Covers each concrete provider implementation: GeminiProvider (Part wrappers for SDK compatibility, FunctionCall/FunctionResponse multi-turn conversion, vision support), GroqProvider (enum stripping from schemas, tool_use_failed detection), OpenRouterProvider (OpenAI-compatible, model passthrough), NvidiaNimProvider (OpenAI-compatible, 50+ models via integrate.api.nvidia.com), VercelAIProvider (AI Gateway, auto-enabled via VERCEL=1), OllamaProvider (local models, http://localhost:11434), G4FProvider (reverse-engineered fallback, unstable). Documents request/stream/test_key interfaces and error mapping for each.",
+      "parent": "LLM Provider Layer",
+      "page_notes": [
+        {
+          "content": "NVIDIA NIM and Vercel AI were added in v2.1.9. Both are OpenAI-compatible and follow the same adapter pattern as OpenRouterProvider. Document auto-detection: nvidia_auto_detect reads NVIDIA_API_KEY from env; vercel_auto_detect reads VERCEL_API_KEY + VERCEL=1."
+        }
+      ]
+    },
+    {
+      "title": "Tool System",
+      "purpose": "Overview of the tool architecture: the _registry singleton in src/tools/registry.py, ToolExecutor dispatch in src/core/tools.py, the end_thinking sentinel (__END_THINKING__: prefix), tool schema generation (OpenAI-compatible JSON), and the categories of available tools. Explains why tool schemas are reset via reset_tool_caps() each message and how _strip_legacy_tool_syntax() catches any leaked text-protocol output as a safety net. Links to child pages.",
+      "page_notes": [
+        {
+          "content": "The end_thinking tool is the mandatory loop exit contract. Document it prominently: the orchestrator only exits when ToolExecutor returns the __END_THINKING__: sentinel. Raw text output from the LLM triggers a correction warning and retry, not an exit."
+        }
+      ]
+    },
+    {
+      "title": "Tool Registry and Schemas",
+      "purpose": "Explains the _registry singleton (lazy init, conditional registration based on config flags), get_all_schemas() producing OpenAI-compatible tool schemas, ToolExecutor.execute() dispatch, the end_thinking interception that returns the __END_THINKING__:<message> sentinel, and how the registry is exposed to providers via get_tool_schemas(). Documents the relationship between ToolExecutor and execute_tool() in agent_factory.py.",
+      "parent": "Tool System",
+      "page_notes": [
+        {
+          "content": "Known debt (M7): ToolExecutor.execute() in src/core/tools.py and execute_tool() in src/agents/agent_factory.py are two diverged implementations. execute_tool() has file delivery (__SEND_FILE__:), declare_step narration, and end_thinking detection; ToolExecutor does not. Consolidation planned for v2.2.5."
+        }
+      ]
+    },
+    {
+      "title": "Code Execution Sandbox",
+      "purpose": "Detailed reference for the three sandbox levels in src/tools/sandbox.py: Level 0 RestrictedPython (in-process, _print_ / _getiter_ / _getattr_ / _write_ injected, auto-escalates to Level 1 when code contains import statements), Level 1 ulimit/process (real Python subprocess, resource-limited), Level 2 Docker (full isolation, python:3.12-slim, Docker socket required). Covers run_sandboxed() public API, detect_best_level(), resource limits, and how sandbox_level is set in config.",
+      "parent": "Tool System",
+      "page_notes": [
+        {
+          "content": "Document the Level 0 → Level 1 auto-escalation: if RestrictedPython detects import or from statements in the code, it escalates to Level 1 automatically rather than failing. Pure math/logic code stays at Level 0 for speed."
+        }
+      ]
+    },
+    {
+      "title": "Shell Tool and Command Security",
+      "purpose": "Covers run_shell_command() in src/tools/shell_tool.py: workspace cwd enforcement (Path.resolve() + is_relative_to), the CONFIRM: prefix override flow, the 22-rule command security firewall in src/tools/command_security.py (four severity tiers: CRITICAL auto-block, HIGH require confirmation, MEDIUM warn, LOW allow), the secondary structural injection block added in v2.1.9 ($() / backticks / chained dangerous commands blocked unconditionally), and the /cmdhistory audit log.",
+      "parent": "Tool System",
+      "page_notes": [
+        {
+          "content": "The secondary injection block added in v2.1.9 is a defence-in-depth measure: it fires before subprocess.run() regardless of command_security_level. It specifically targets $() subshell substitution, backtick substitution, and semicolon-chained rm/curl/wget/nc/bash/sh commands which are the most common blocklist-bypass patterns."
+        }
+      ]
+    },
+    {
+      "title": "Web and Workspace Tools",
+      "purpose": "Documents the web-facing tools: web_search_tool (DDG HTML POST with GET fallback, _decode_ddg_url() to resolve redirect URLs, max_results coercion), curl_fetch (raises only on 5xx, not 4xx), wikipedia_search. And workspace file tools: read_file / write_file (Path.resolve() + is_relative_to() traversal protection, size limits), list_workspace, send_file (Telegram document upload). Notes the --insecure flag in curl for self-signed certificates.",
+      "parent": "Tool System",
+      "page_notes": [
+        {
+          "content": "web_search has two known failure modes: DDG POST bot detection (mitigated by GET fallback) and DDG redirect URLs. _decode_ddg_url() decodes the uddg parameter from DuckDuckGo redirect links to return actual destination URLs."
+        }
+      ]
+    },
+    {
+      "title": "Memory Tools",
+      "purpose": "Documents save_memory(), get_memories(), get_relevant_memories(), save_skill(), use_skill(), and the /memory / /pinmemory / /unpinmemory / /deletememory commands. Explains the two-tier retrieval: pinned memories (always injected, up to max_pinned_memories) + semantically relevant memories (vector similarity search, top-k). Notes the v2.1.5 data isolation fix: all tools now receive the correct per-user user_id from the orchestration layer instead of hardcoded 0.",
+      "parent": "Tool System",
+      "page_notes": [
+        {
+          "content": "The user_id=0 hardcoding bug (all users sharing one memory bucket) was fixed in v2.1.5. Document this explicitly so future contributors understand why memory tools must receive user_id from ToolExecutor and must not read it from a global or closure."
+        }
+      ]
+    },
+    {
+      "title": "Narration Tool and declare_step",
+      "purpose": "Explains declare_step() / narration_tool: how it emits SessionEvents (INTENT on status='running', STEP_DONE on status='done', STEP_FAILED on status='failed') to the event bus, the TECHNICAL_MANDATES requirement to call it before multi-tool sequences, and why it returns '' (empty string) — the orchestrator filters declare_step results from the process log to avoid blank lines.",
+      "parent": "Tool System",
+      "page_notes": [
+        {
+          "content": "declare_step is always included in the tool schema priority list alongside end_thinking, regardless of the _working_caps floor. Both are mandatory for correct loop operation."
+        }
+      ]
+    },
+    {
+      "title": "Background Monitoring System",
+      "purpose": "Overview of the zero-token-at-rest background agent framework in src/agents/background/: watcher types, WakeSignal lifecycle (threshold breach → queue → LLM analysis → Telegram notification), and the BackgroundAgentManager singleton. Explains why watchers consume no LLM tokens while idle and only trigger the orchestrator when a condition is met. Links to child pages.",
+      "page_notes": [
+        {
+          "content": "Key design principle: watchers run pure Python checks (no LLM calls) on their interval. Only a positive threshold breach queues a WakeSignal. The _wake_processor_loop then decides whether to send a direct notify, run LLM analysis, or spin up a full ConcreteAgent turn."
+        }
+      ]
+    },
+    {
+      "title": "BackgroundAgentManager and WakeProcessor",
+      "purpose": "Deep dive into BackgroundAgentManager in src/agents/background/manager.py: initialization (start() registers unblacklist loop + wake processor as asyncio tasks), register(), create_from_natural_language() (LLM parses natural language into BackgroundAgentConfig), _watcher_loop (per-watcher interval timer), wake_queue (asyncio.Queue), _wake_processor_loop (three handling paths: direct notify for INFO severity, LLM summarization for WARN, full ConcreteAgent turn for CRITICAL), and graceful shutdown via stop() + post_shutdown hook.",
+      "parent": "Background Monitoring System",
+      "page_notes": [
+        {
+          "content": "stop() + PTB post_shutdown hook added in v2.1.9 ensures the unblacklist_loop and wake_processor tasks are cancelled on SIGINT/SIGTERM rather than left as orphaned asyncio tasks."
+        }
+      ]
+    },
+    {
+      "title": "Watcher Implementations",
+      "purpose": "Reference for each concrete watcher type in src/agents/background/: SystemWatcher (CPU/memory/disk via /proc/meminfo + /proc/stat), ProcessWatcher (ps aux grep), URLWatcher (HTTP status + response time via curl), PortWatcher (TCP connect attempt), LogPatternWatcher (tail -n N | grep pattern), CronWatcher (cron expression evaluation), ScriptWatcher (arbitrary shell command exit code). For each: check() return signature, WakeSignal severity mapping, config keys, and example /watch command syntax.",
+      "parent": "Background Monitoring System",
+      "page_notes": [
+        {
+          "content": "ScriptWatcher is the most flexible: any shell command returning exit 0 = OK, non-zero = threshold breach. Combined with the CONFIRM: prefix, it can trigger arbitrary agent actions on external events."
+        }
+      ]
+    },
+    {
+      "title": "Persistence Layer",
+      "purpose": "Overview of all storage subsystems: SQLite via aiosqlite (default) or Postgres via asyncpg (POSTGRES_URL set), vector store (Qdrant local + fastembed for embeddings), and the AES-256-GCM encryption layer. Covers the dual-backend database connection in src/db/connection.py and how all store modules work identically regardless of backend. Links to child pages.",
+      "page_notes": [
+        {
+          "content": "Postgres backend added in v2.1.9. The pg_compat.py shim translates SQLite-style SQL (INSERT OR REPLACE, datetime('now'), ? placeholders) to Postgres syntax automatically. All store modules (chat_store, key_store, background_store) require no changes between backends."
+        }
+      ]
+    },
+    {
+      "title": "Database Schema and Migrations",
+      "purpose": "Documents the full schema across all migration files in src/db/migrate.py: users (id, telegram_id, username), api_keys (user_id, provider, encrypted_key, blacklisted_until, last_used_at, total_tokens), conversations, messages, agent_tasks, chat_history, chat_summaries, rika_memory (user_id, key, value, pinned, created_at), background_agents (config JSON), wake_events (agent_id, signal JSON, handled_at), command_audit (user_id, command, timestamp). Covers the migration runner (idempotent, safe to re-run), Postgres schema in pg_migrate.py, and version tracking.",
+      "parent": "Persistence Layer",
+      "page_notes": [
+        {
+          "content": "The migration runner applies all pending migrations in order. It is safe to re-run: each migration checks for the existence of the target table/column before altering. pg_migrate.py consolidates all 7 SQLite migrations into a single idempotent Postgres schema."
+        }
+      ]
+    },
+    {
+      "title": "Store Modules",
+      "purpose": "API reference for the three main store modules: chat_store (add_chat_message, get_chat_history, add_summary, get_summary, get_all_skills, save_skill, get_skill), key_store (upsert_user, add_api_key, list_api_keys, get_api_key_raw, delete_api_key, blacklist_key, update_token_count), background_store (save_agent, list_agents, delete_agent, log_wake_event). For each function: signature, SQL query, return type, and error handling.",
+      "parent": "Persistence Layer",
+      "page_notes": [
+        {
+          "content": "get_api_key_raw() decrypts the stored AES-256-GCM blob using BOT_ENCRYPTION_KEY. Decryption failure is the most common cause of keys that appear in db_keys_count but are rejected during _select_key(). Log the decryption failure explicitly so users can diagnose corruption."
+        }
+      ]
+    },
+    {
+      "title": "Vector Memory and Semantic Search",
+      "purpose": "Covers the VectorStore class in src/db/vector_store.py: the collective_unconscious Qdrant local collection, add_memory() (fastembed embedding → upsert with named vector), search_memories() (query_points with using= named vector), _VECTOR_DISABLED fail-soft flag (set on ONNX model missing, logs one WARNING then stays silent), and how pinned vs. semantically relevant memories are merged per turn. Documents the v2.1.9 named-vector fix: vector wrapped in {vec_name: vector} dict when collection uses named vectors.",
+      "parent": "Persistence Layer",
+      "page_notes": [
+        {
+          "content": "When _VECTOR_DISABLED is True, search_memories() returns an empty dict silently. v2.2.6 will add a fallback to recency-based retrieval (N most recent by created_at) so memory is not completely unavailable when the ONNX model is missing. Also surface this state in /status output."
+        }
+      ]
+    },
+    {
+      "title": "Encryption and Key Security",
+      "purpose": "Explains the AES-256-GCM encryption layer in src/crypto.py: encrypt() (random 12-byte nonce + GCM tag + ciphertext, stored as nonce||ciphertext base64), decrypt() (nonce extraction + GCM verification), BOT_ENCRYPTION_KEY derivation (32-byte hex from .env, validated at startup). Covers key loss implications: all stored API keys become unrecoverable without the encryption key. Documents why /deletekey purges the DB row rather than re-encrypting.",
+      "parent": "Persistence Layer",
+      "page_notes": [
+        {
+          "content": "BOT_ENCRYPTION_KEY must be stable across restarts. Rotating it invalidates all stored API keys. The setup wizard generates a random key with secrets.token_hex(32) and writes it to .env. Document this prominently in the Getting Started and Deployment pages."
+        }
+      ]
+    },
+    {
+      "title": "Infrastructure and Deployment",
+      "purpose": "Overview of deployment options (Docker Compose vs. bare-metal), the startup lifecycle (migrate → scheduler init → background manager → PTB polling), workspace directory setup (~/.rika/shared), and operational tooling (/status, /reload, logs/). Documents the OWNER_USER_ID requirement and the two-phase startup pattern in the Dockerfile. Links to Docker Deployment and Logging pages.",
+      "page_notes": [
+        {
+          "content": "Workspace path changed from ~/.Rika-Workspace to ~/.rika/shared in v2.1.9. Existing installs: either move the directory or set workspace_path in config.json to the old location. The bot will not move files automatically."
+        }
+      ]
+    },
+    {
+      "title": "Docker Deployment",
+      "purpose": "Covers the Dockerfile build (python:3.12-slim, system deps, /app/data and /app/logs volume dirs, non-root user recommendation), docker-compose.yml service definition (volumes for data/ and logs/, env_file .env, restart: unless-stopped, Docker socket mount for Level 2 sandbox), and the two-phase startup (migrate then app). Includes a production checklist: OWNER_USER_ID set, BOT_ENCRYPTION_KEY backed up, data/ volume on persistent storage.",
+      "parent": "Infrastructure and Deployment",
+      "page_notes": [
+        {
+          "content": "The Docker socket mount (/var/run/docker.sock) is required only for Level 2 sandbox (Docker-in-Docker code execution). If sandbox_level is 0 or 1, the socket mount can be removed for a smaller attack surface."
+        }
+      ]
+    },
+    {
+      "title": "Logging and Observability",
+      "purpose": "Documents the structured JSON log format (structlog, every event has event, level, timestamp plus context fields), key event names to monitor in production (incoming_message, orchestration_provider_failed, all_providers_failed_retrying, orchestration_same_turn_retry_limit, shell_structural_injection_blocked, vector_store_disabled), log rotation via logs/ directory, and how to use --log-level debug for verbose output. Includes a log interpretation guide for the most common warning patterns.",
+      "parent": "Infrastructure and Deployment",
+      "page_notes": [
+        {
+          "content": "provider_pool_no_keys_found now includes db_keys_count (per-provider, not global) and env_key_found (bool) since v2.1.9. These two fields are the fastest way to diagnose why a provider is not being used. shell_structural_injection_blocked is a new v2.1.9 event — seeing it in logs means someone attempted a shell injection."
+        }
+      ]
+    },
+    {
+      "title": "Roadmap",
+      "purpose": "Living development roadmap covering all planned milestones from the current v2.1.9 stable through v3.0.0. Each milestone includes a purpose statement, list of changes with file targets and done-when criteria, and dependency relationships. Also documents the architecture debt audit (C1-C3 critical, H1-H5 high, M1-M7 medium, L1-L5 low) and the v2.2.6 debt repayment sprint.",
+      "page_notes": [
+        {
+          "content": "The roadmap is maintained in ROADMAP.md in the repo root. This page should render it directly or stay in sync with it. Key upcoming milestones: v2.2.0 Event Stream (WorkLogRenderer wired into Telegram), v2.2.5 Legacy Code Elimination (single orchestration path, app.py < 60 lines), v2.2.6 Architecture Debt, v2.3.0 Core Features."
+        }
+      ]
+    },
+    {
+      "title": "Contributing",
+      "purpose": "Guide for contributors: repo structure tour (src/ layout, where each subsystem lives), development environment setup (venv, requirements-dev.txt, pre-commit hooks), the patch delivery convention (idempotent Python patch scripts with ast.parse() validation and .bak backups), how to add a new tool (registry entry + schema + executor dispatch), how to add a new provider (ProviderPool._TOOL_CAPS entry + adapter class), and the branching model (main = stable, testing = active development, feature branches off testing).",
+      "page_notes": [
+        {
+          "content": "Patch script convention: every patch script checks old string presence before modifying, calls backup() before writing, validates with ast.parse() after, and prints [OK]/[SKIP] per change. This pattern came from the v2.1.5-v2.1.9 development cycle and should be the standard for all future hotfixes."
+        }
+      ]
+    }
+  ]
+}

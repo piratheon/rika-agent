@@ -17,7 +17,7 @@ async def wikipedia_search(query: str) -> str:
         "srlimit": 1
     }
     
-    headers = {"User-Agent": "RikkaBot/1.0 (https://github.com/sunny/Rikka-Bot)"}
+    headers = {"User-Agent": "AgentBot/1.0 (https://github.com/piratheon/Rika-Agent)"}
     
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:

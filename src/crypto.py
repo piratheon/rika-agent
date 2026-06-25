@@ -2,7 +2,11 @@ import os
 import binascii
 from typing import Tuple
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+def _get_cipher():
+    """Lazy import of AESGCM to avoid hard dependency at module load."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    return AESGCM
 
 
 def _get_key() -> bytes:
@@ -14,9 +18,9 @@ def _get_key() -> bytes:
 
 def encrypt(plaintext: bytes, associated_data: bytes | None = None) -> bytes:
     """Encrypt bytes with AES-256-GCM. Returns nonce + ciphertext (concatenated).
-
     Nonce length: 12 bytes.
     """
+    AESGCM = _get_cipher()
     key = _get_key()
     aesgcm = AESGCM(key)
     nonce = os.urandom(12)
@@ -25,9 +29,8 @@ def encrypt(plaintext: bytes, associated_data: bytes | None = None) -> bytes:
 
 
 def decrypt(blob: bytes, associated_data: bytes | None = None) -> bytes:
-    """Decrypt a blob produced by `encrypt` (nonce + ciphertext).
-    Raises exceptions from AESGCM on failure.
-    """
+    """Decrypt a blob produced by `encrypt` (nonce + ciphertext)."""
+    AESGCM = _get_cipher()
     key = _get_key()
     aesgcm = AESGCM(key)
     nonce = blob[:12]

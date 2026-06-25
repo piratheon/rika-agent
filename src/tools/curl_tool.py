@@ -29,7 +29,9 @@ async def curl_fetch(url: str) -> str:
         # Use verify=False if insecure mode is requested
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, verify=verify_ssl) as client:
             r = await client.get(url, headers=headers)
-            r.raise_for_status()
+            # Only raise on server errors (5xx). 4xx may still have content.
+            if r.status_code >= 500:
+                r.raise_for_status()
             
             text = r.text
             

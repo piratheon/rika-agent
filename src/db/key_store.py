@@ -2,16 +2,21 @@ import hashlib
 from typing import List, Optional
 from .migrate import apply_migrations
 from ..crypto import encrypt, decrypt
-from .connection import get_db, DB_PATH
+from .connection import get_db, get_db_path
 
 async def init_db():
-    await apply_migrations(DB_PATH)
+    await apply_migrations(get_db_path())
 
 
-async def upsert_user(telegram_user_id: int, username: Optional[str] = None) -> int:
+async def upsert_user(
+    platform: str,
+    platform_user_id: str,
+    username: Optional[str] = None,
+) -> int:
     async with get_db() as conn:
         cur = await conn.execute(
-            "SELECT id FROM users WHERE telegram_user_id = ?", (telegram_user_id,)
+            "SELECT id FROM users WHERE platform = ? AND platform_user_id = ?",
+            (platform, platform_user_id),
         )
         row = await cur.fetchone()
         if row:
@@ -25,8 +30,8 @@ async def upsert_user(telegram_user_id: int, username: Optional[str] = None) -> 
             return uid
 
         cur = await conn.execute(
-            "INSERT INTO users(telegram_user_id, username, last_active_at) VALUES(?,?,datetime('now'))",
-            (telegram_user_id, username),
+            "INSERT INTO users(platform, platform_user_id, username, last_active_at) VALUES(?,?,?,datetime('now'))",
+            (platform, platform_user_id, username),
         )
         await conn.commit()
         return cur.lastrowid
@@ -85,10 +90,13 @@ async def get_api_key_raw(key_id: int) -> bytes:
             raise RuntimeError("Failed to decrypt API key") from e
 
 
-async def delete_user_by_telegram_id(telegram_user_id: int) -> int:
+async def delete_user_by_platform(platform: str, platform_user_id: str) -> int:
     """Delete a user and cascade-delete related rows. Returns number of rows deleted."""
     async with get_db() as conn:
-        cur = await conn.execute("SELECT id FROM users WHERE telegram_user_id = ?", (telegram_user_id,))
+        cur = await conn.execute(
+            "SELECT id FROM users WHERE platform = ? AND platform_user_id = ?",
+            (platform, platform_user_id),
+        )
         row = await cur.fetchone()
         if not row:
             return 0

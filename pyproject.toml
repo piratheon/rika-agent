@@ -1,13 +1,36 @@
 [project]
-name = "rikka-bot"
-version = "0.1.0"
-description = "Rikka Bot - agentic Telegram assistant"
+name = "rk-agent"
+version = "2.1.0"
+description = "rk-agent — agentic Telegram assistant with background monitoring"
 requires-python = ">=3.12"
 dependencies = [
-  "python-telegram-bot>=21.0",
-  "aiosqlite",
-  "pydantic>=2.0",
-  "structlog",
-  "python-dotenv",
-  "httpx",
+    "python-telegram-bot>=21.0",
+    "aiosqlite",
+    "pydantic>=2.0",
+    "structlog",
+    "python-dotenv",
+    "httpx",
+    "cryptography",
+    "APScheduler",
+    "flask>=3.0",
+    "asyncpg",
+    "google-genai",
+    "qdrant-client",
+    "fastembed",
+    "RestrictedPython",
+    "beautifulsoup4",
+    "lxml",
 ]
+
+[project.optional-dependencies]
+g4f = ["g4f"]
+gtk = ["PyGObject>=3.48"]
+web = ["fastapi>=0.110", "uvicorn[standard]", "jinja2", "python-multipart"]
+dev = ["respx", "pytest", "pytest-asyncio"]
+all = ["rk-agent[g4f,gtk,web,dev]"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[project.scripts]
+rk-agent = "src.bot.app:main"
