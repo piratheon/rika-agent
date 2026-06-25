@@ -63,12 +63,11 @@ async def _process_message(
     message: str,
     platform_user_id: str,
 ) -> list[str]:
-    from src.bot.app import run_orchestration_background
-    from src.core.event_sink import EventSink
+    from src.core.orchestrator import Orchestrator
     from src.db.chat_store import add_chat_message, get_chat_history
     from src.db.key_store import get_summary_data
+    from src.db.vector_store import vector_store
 
-    sink = EventSink(adapter)
     await add_chat_message(user_id, "user", message)
 
     summary_data = await get_summary_data(user_id)
@@ -86,16 +85,24 @@ async def _process_message(
     context_parts.append(f"user: {message}")
     context_str = "\n".join(context_parts)
 
-    handle = f"api:{channel_id}:{user_id}"
-    await run_orchestration_background(
-        channel_id=channel_id,
-        handle=handle,
+    # Wire send_text as on_message so the adapter buffers responses
+    async def _on_message(response: str, agent_results: dict) -> None:
+        await adapter.send_text(channel_id, response)
+
+    orchestrator = Orchestrator(
+        config=config,
+        on_message=_on_message,
+        is_cancelled=lambda cid: False,
+    )
+
+    _ = await orchestrator.run(
         user_id=user_id,
+        channel_id=channel_id,
+        message=message,
         context_str=context_str,
-        original_text=message,
+        system_prompt=config.system_prompt,
         history=history,
         summary=summary,
-        sink=sink,
     )
 
     return adapter.drain(channel_id)

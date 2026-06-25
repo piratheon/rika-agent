@@ -193,7 +193,6 @@ class DiscordAdapter(InterfaceAdapter):
 
     def format_text(self, text: str, mode: str = "HTML") -> str:
         if mode == "HTML":
-            text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
             text = text.replace("<br>", "\n").replace("<br/>", "\n")
             text = text.replace("<b>", "**").replace("</b>", "**")
             text = text.replace("<i>", "*").replace("</i>", "*")
@@ -201,6 +200,7 @@ class DiscordAdapter(InterfaceAdapter):
             text = text.replace("<pre>", "```").replace("</pre>", "```")
             import re
             text = re.sub(r"<[^>]+>", "", text)
+            text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
         return text
 
     async def send_chunked(
