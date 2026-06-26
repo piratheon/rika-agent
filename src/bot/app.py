@@ -14,14 +14,7 @@ Changes vs v1:
 
 from __future__ import annotations
 
-print("""
- ██████╗ ██╗██╗  ██╗ █████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗
- ██╔══██╗██║██║ ██╔╝██╔══██╗     ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝
- ██████╔╝██║█████╔╝ ███████║     ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   
- ██╔══██╗██║██╔═██╗ ██╔══██║     ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   
- ██║  ██║██║██║  ██╗██║  ██║     ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   
- ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚═╝  ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   
-""")
+# patch_banner_and_discord: bug6_banner_moved_to_main
 
 import asyncio
 import json
@@ -2165,6 +2158,15 @@ import threading
 
 
 def main() -> None:
+    # patch_banner_and_discord: bug6_banner_in_main
+    print("""
+ ██████╗ ██╗██╗  ██╗ █████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗
+ ██╔══██╗██║██║ ██╔╝██╔══██╗     ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝
+ ██████╔╝██║█████╔╝ ███████║     ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   
+ ██╔══██╗██║██╔═██╗ ██╔══██║     ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   
+ ██║  ██║██║██║  ██╗██║  ██║     ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   
+ ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚═╝  ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   
+""")
     load_dotenv()
     config = Config.get()
     platforms = Config.detect_platforms()
@@ -2251,8 +2253,20 @@ async def _run_bg(config: Config) -> None:
 
 def _run_discord(config: Config) -> None:
     """Start Discord interface only — standalone."""
+    # patch_banner_and_discord: bug7_graceful_discord_standalone
+    try:
+        from src.interfaces.discord.bot import DiscordBot
+    except ModuleNotFoundError as exc:
+        if "discord" in str(exc).lower():
+            print(
+                "\n  [Discord] discord.py is not installed.\n"
+                "  Install it with:\n"
+                "      pip install \"discord.py>=2.3.0\"\n",
+                flush=True,
+            )
+            sys.exit(1)
+        raise
     print(f"  → Starting {config.bot_name} Discord interface")
-    from src.interfaces.discord.bot import DiscordBot
     token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
     owner_id = os.environ.get("OWNER_USER_ID", "").strip()
     bot = DiscordBot(token, owner_user_id=owner_id)
@@ -2284,7 +2298,20 @@ def _run_telegram_discord(config: Config) -> None:
 
 def _run_discord_isolated(token: str, owner_id: str) -> None:
     """Run Discord bot in its own thread (no shared event loop issues)."""
-    from src.interfaces.discord.bot import DiscordBot
+    # patch_banner_and_discord: bug7_graceful_discord_import
+    try:
+        from src.interfaces.discord.bot import DiscordBot
+    except ModuleNotFoundError as exc:
+        if "discord" in str(exc).lower():
+            print(
+                "\n  [Discord] discord.py is not installed.\n"
+                "  Install it with:\n"
+                "      pip install \"discord.py>=2.3.0\"\n"
+                "  Discord interface will be unavailable until then.\n",
+                flush=True,
+            )
+            return
+        raise
     bot = DiscordBot(token, owner_user_id=owner_id)
     bot.run()
 
