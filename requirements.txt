@@ -23,9 +23,7 @@ beautifulsoup4
 lxml
 
 # Optional: Discord
-# discord.py  (uncomment if using Discord interface)
-# Alternatively: pip install discord.py
-
+discord.py  
 # Optional: Local LLM (no install needed for Ollama — it's HTTP-based)
 # Ollama itself runs as a separate process: https://ollama.com
 
