@@ -1,8 +1,10 @@
 """Telegram interface — thin adapter over core logic.
 
-This module contains Telegram-specific handlers that use the shared core.
+Handler extraction (src.interfaces.telegram.handlers) is planned for v2.2.5.
+Until then, handlers live in src.bot.app and are re-exported from here.
 """
-from src.interfaces.telegram.handlers import (
+# patch_deep_scan: bug1_handlers_reexport
+from src.bot.app import (  # noqa: F401
     start_handler,
     help_handler,
     status_handler,

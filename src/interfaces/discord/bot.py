@@ -237,8 +237,8 @@ class DiscordBot:
         context_str: str, history: list, summary: Optional[str], cfg,
     ) -> None:
         """Simple LLM call without tools (same as Telegram's _handle_direct_reply)."""
+        # patch_deep_scan: bug2_model_router_replaced
         from src.db.chat_store import add_chat_message
-        from src.providers.model_router import model_router
 
         await add_chat_message(user_id, "user", text)
         payload = {
@@ -255,31 +255,40 @@ class DiscordBot:
             payload["messages"].append({"role": msg["role"], "content": msg["content"]})
         payload["messages"].append({"role": "user", "content": text})
 
-        last_error = None
+        last_error: Exception | None = None
         pool = _pool()
+        all_priorities = cfg.default_provider_priority or ["gemini", "groq", "openrouter"]
         available_keys = await _get_keys(user_id)
-        available = [k["provider"] for k in available_keys]
-        priority = cfg.get_active_providers(available)
+        available = {k["provider"] for k in available_keys}
+        priority = [p for p in all_priorities if p in available]
 
         for provider_name in priority:
-            keys_for_provider = [k for k in available_keys if k["provider"] == provider_name]
-            for key in keys_for_provider:
-                try:
-                    reply = await model_router.route_to_provider(
-                        provider_name, key["key"], payload, cfg
-                    )
-                    if reply:
-                        await add_chat_message(user_id, "assistant", reply)
-                        await channel.send(reply)
-                        return
-                except Exception as exc:
-                    last_error = exc
-                    logger.debug("direct_reply_provider_failed", provider=provider_name, error=str(exc))
-                    continue
+            try:
+                resp = await pool.request_with_key(user_id, provider_name, payload)
+                reply = (
+                    resp.get("content") or
+                    resp.get("text") or
+                    (resp.get("choices") or [{}])[0].get("message", {}).get("content", "")
+                ).strip()
+                if reply:
+                    await add_chat_message(user_id, "assistant", reply)
+                    await channel.send(reply)
+                    return
+            except Exception as exc:
+                last_error = exc
+                logger.debug("direct_reply_provider_failed",
+                             provider=provider_name, error=str(exc))
 
-        # All providers failed
-        from src.bot.app import _friendly_provider_error
-        await channel.send(_friendly_provider_error(last_error))
+        err = str(last_error or "").lower()
+        if "429" in err or "quota" in err or "rate limit" in err:
+            msg = "All providers are rate-limited. Wait a few minutes and try again."
+        elif "401" in err or "unauthorized" in err or "no api key" in err:
+            msg = "No working API key found. Add one with /addkey."
+        elif "timeout" in err or "timed out" in err:
+            msg = "The AI provider timed out. Please try again."
+        else:
+            msg = "All AI providers failed to respond. Try again in a moment."
+        await channel.send(msg)
 
     async def _run_orchestration_guarded(
         self, sem: asyncio.Semaphore, channel_id: str, handle: str,
@@ -294,11 +303,28 @@ class DiscordBot:
                     pass
             return
         async with sem:
-            from src.bot.app import run_orchestration_background
-            await run_orchestration_background(
-                channel_id, handle, user_id, context_str,
-                original_text, history, summary, None,
-                sink=self._sink,
+            # patch_deep_scan: bug3_orchestrator_direct
+            from src.core.orchestrator import Orchestrator
+            _cfg_o = _cfg()
+
+            async def _on_msg(text: str, _results: dict) -> None:
+                if self._sink:
+                    await self._sink.send_text(channel_id, text)
+
+            orch = Orchestrator(
+                on_message=_on_msg,
+                is_cancelled=lambda cid: (
+                    self._sink.is_cancelled(cid) if self._sink else False
+                ),
+            )
+            await orch.run(
+                user_id=user_id,
+                channel_id=channel_id,
+                message=original_text,
+                context_str=context_str,
+                system_prompt=_cfg_o.system_prompt,
+                history=history,
+                summary=summary,
             )
 
     # ------------------------------------------------------------------
