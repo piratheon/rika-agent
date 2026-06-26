@@ -55,7 +55,21 @@ class DiscordBot:
         await self._client.start(self._token, reconnect=True)
 
     def run(self) -> None:
-        self._client.run(self._token, reconnect=True)
+        # patch_discord_intents_error: privileged_intents_handler
+        try:
+            self._client.run(self._token, reconnect=True)
+        except discord.errors.PrivilegedIntentsRequired:
+            print(
+                "\n  [Discord] Bot requires the Message Content privileged intent.\n"
+                "  Enable it at:\n"
+                "    https://discord.com/developers/applications/\n"
+                "  Steps:\n"
+                "    1. Select your application\n"
+                "    2. Bot → Privileged Gateway Intents\n"
+                "    3. Enable \"Message Content Intent\"\n"
+                "    4. Save Changes and restart the bot\n",
+                flush=True,
+            )
 
     async def close(self) -> None:
         await self._client.close()
