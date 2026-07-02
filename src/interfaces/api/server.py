@@ -35,9 +35,10 @@ def _submit(coro) -> asyncio.Future:
 
 def _get_or_create_user(api_key: str) -> tuple[int, str]:
     key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
-    from src.db.key_store import get_or_create_user
+    # patch_deep_scan_2: B1_upsert_user
+    from src.db.key_store import upsert_user
     future = _submit(
-        get_or_create_user("api", key_hash, username=f"api_{key_hash[:8]}")
+        upsert_user("api", key_hash, username=f"api_{key_hash[:8]}")
     )
     user_id = future.result()
     return user_id, key_hash
@@ -63,11 +64,14 @@ async def _process_message(
     message: str,
     platform_user_id: str,
 ) -> list[str]:
+    # patch_friends_fixes: orchestrator_direct
+    from src.core.event_sink import EventSink
     from src.core.orchestrator import Orchestrator
     from src.db.chat_store import add_chat_message, get_chat_history
-    from src.db.key_store import get_summary_data
-    from src.db.vector_store import vector_store
+    # patch_deep_scan_2: B2_summary_data_module
+    from src.db.chat_store import get_summary_data
 
+    sink = EventSink(adapter)
     await add_chat_message(user_id, "user", message)
 
     summary_data = await get_summary_data(user_id)
@@ -85,17 +89,15 @@ async def _process_message(
     context_parts.append(f"user: {message}")
     context_str = "\n".join(context_parts)
 
-    # Wire send_text as on_message so the adapter buffers responses
-    async def _on_message(response: str, agent_results: dict) -> None:
-        await adapter.send_text(channel_id, response)
+    async def _on_message(text: str, _agent_results: dict) -> None:
+        await sink.send_text(channel_id, text)
 
-    orchestrator = Orchestrator(
-        config=config,
+    # patch_deep_scan: bug4_system_prompt
+    orch = Orchestrator(
         on_message=_on_message,
-        is_cancelled=lambda cid: False,
+        is_cancelled=lambda cid: sink.is_cancelled(cid),
     )
-
-    _ = await orchestrator.run(
+    await orch.run(
         user_id=user_id,
         channel_id=channel_id,
         message=message,

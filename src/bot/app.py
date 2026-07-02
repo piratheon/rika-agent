@@ -912,11 +912,11 @@ async def _process_message(
     context_parts.append(f"user: {text}")
     context_str = "\n".join(context_parts)
 
-    # Complexity check — LLM-based routing
-    is_complex = await _classify_complexity(text, cfg, pool, user_id)
-    logger.debug("complexity_routing", is_complex=is_complex, text_len=len(text))
+    # 3-way complexity routing
+    complexity = await classify_complexity(text, cfg, pool, user_id)
+    logger.debug("complexity_routing", complexity=complexity, text_len=len(text))
 
-    if not is_complex:
+    if complexity == "simple":
         await _handle_direct_reply(update, context, user_id, text, context_str, history, summary, cfg, pool, last_msg_id)
     else:
         channel_id = f"tg:{update.effective_chat.id}"
@@ -952,13 +952,6 @@ async def _process_message(
                 _adapter.untrack_task(channel_id)
         task.add_done_callback(cleanup)
 
-
-async def _classify_complexity(text: str, cfg: Config, pool, user_id: int) -> bool:
-    """Classify whether a message requires tools / orchestration.
-    
-    Wrapper around core classify_complexity for backward compatibility.
-    """
-    return await classify_complexity(text, cfg, pool, user_id)
 
 
 async def _handle_direct_reply(
@@ -1053,8 +1046,32 @@ async def _handle_direct_reply(
             continue
     
     if not reply:
-        logger.error("direct_reply_no_response", priorities=priorities, available=available, last_error=last_error)
-        await update.message.reply_text(_friendly_provider_error(last_error))
+        # patch_restore_retry: fix1_tg_direct_reply_fallthrough
+        # All providers failed — fall through to the full orchestration path
+        # which has unlimited auto-retry with countdown + Stop/Retry buttons.
+        # Showing a static error here was the bug: it gave up after one pass.
+        logger.warning(
+            "direct_reply_all_providers_failed_routing_to_orchestration",
+            last_error=last_error,
+        )
+        sent = await update.message.reply_text(
+            f"{_agent_name(cfg)} is having trouble reaching providers — retrying..."
+        )
+        channel_id = f"tg:{update.effective_chat.id}"
+        handle = f"tg:{sent.chat_id}:{sent.message_id}"
+        sem = _get_semaphore(channel_id)
+        if _adapter is not None:
+            _adapter.clear_cancel(channel_id)
+            _adapter.init_countdown_events(channel_id)
+        task = asyncio.create_task(
+            _run_orchestration_guarded(
+                sem, channel_id, handle,
+                user_id, context_str, text, history, summary, cfg,
+            )
+        )
+        if _adapter is not None:
+            _adapter.track_task(channel_id, task)
+            task.add_done_callback(lambda _: _adapter.untrack_task(channel_id))
         return
 
     # If LLM spontaneously tried to use a tool in "simple" mode, re-route
@@ -1979,6 +1996,22 @@ async def start_shared_infra(config: Config) -> None:
     except Exception as exc:
         logger.warning("workspace_init_failed", error=str(exc))
 
+    # Bootstrap skills (copy bundled → ~/.rika/skills/ on first run)
+    try:
+        from src.core.skill_registry import SkillRegistry
+        sr = SkillRegistry.get()
+        sr.load()
+        logger.info("skills_ready", count=len(sr.all_skills()))
+    except Exception as exc:
+        logger.warning("skills_bootstrap_failed", error=str(exc))
+
+    # Warm TaskRouter so first message doesn't pay config-parse cost
+    try:
+        from src.core.task_router import TaskRouter
+        TaskRouter.get(config)
+    except Exception as exc:
+        logger.warning("task_router_init_failed", error=str(exc))
+
 
 async def start_background_tasks(config: Config) -> None:
     """Start scheduler + unblacklist loop.
@@ -2268,7 +2301,13 @@ def _run_discord(config: Config) -> None:
         raise
     print(f"  → Starting {config.bot_name} Discord interface")
     token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
-    owner_id = os.environ.get("OWNER_USER_ID", "").strip()
+    # patch_discord_auth_and_db: bugA_discord_owner_standalone
+    # Use DISCORD_OWNER_ID (your Discord snowflake ID), not OWNER_USER_ID
+    # (which is your Telegram user ID — a completely different number).
+    owner_id = (
+        os.environ.get("DISCORD_OWNER_ID", "").strip()
+        or os.environ.get("OWNER_USER_ID", "").strip()
+    )
     bot = DiscordBot(token, owner_user_id=owner_id)
     bot.run()
 
@@ -2280,7 +2319,11 @@ def _run_telegram_discord(config: Config) -> None:
     # Start Discord in a background thread
     import threading
     token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
-    owner_id = os.environ.get("OWNER_USER_ID", "").strip()
+    # patch_discord_auth_and_db: bugA_discord_owner_combined
+    owner_id = (
+        os.environ.get("DISCORD_OWNER_ID", "").strip()
+        or os.environ.get("OWNER_USER_ID", "").strip()
+    )
     discord_thread = threading.Thread(
         target=_run_discord_isolated,
         args=(token, owner_id),

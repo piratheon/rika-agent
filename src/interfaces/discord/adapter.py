@@ -191,16 +191,29 @@ class DiscordAdapter(InterfaceAdapter):
     def supports_interactive(self) -> bool:
         return True
 
-    def format_text(self, text: str, mode: str = "HTML") -> str:
+    def format_text(self, text: str, mode: str = "HTML") -> str:  # patch_friends_fixes: format_text_fixed
         if mode == "HTML":
+            import re
+            # Step 1 — convert known structural tags to Markdown while
+            # &lt;/&gt; are still escaped (protects text content from the
+            # tag-stripping regex that follows).
             text = text.replace("<br>", "\n").replace("<br/>", "\n")
             text = text.replace("<b>", "**").replace("</b>", "**")
-            text = text.replace("<i>", "*").replace("</i>", "*")
+            text = text.replace("<i>", "_").replace("</i>", "_")
+            text = text.replace("<u>", "__").replace("</u>", "__")
+            text = text.replace("<s>", "~~").replace("</s>", "~~")
             text = text.replace("<code>", "`").replace("</code>", "`")
             text = text.replace("<pre>", "```").replace("</pre>", "```")
-            import re
+            # Step 2 — strip any remaining unknown HTML tags.
+            # Safe: &lt; and &gt; in text content are still escaped entities,
+            # not bare < >, so the regex cannot eat them.
             text = re.sub(r"<[^>]+>", "", text)
-            text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+            # Step 3 — unescape HTML entities now that no tags remain.
+            # &lt;/&gt; in text content (e.g. numeric comparisons, C++ templates,
+            # escaped LLM output) are restored to < > for the Discord user.
+            text = text.replace("&lt;", "<").replace("&gt;", ">")
+            text = text.replace("&amp;", "&").replace("&quot;", '"'
+                               ).replace("&apos;", "'")
         return text
 
     async def send_chunked(

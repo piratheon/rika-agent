@@ -85,6 +85,16 @@ class Config(BaseModel):
     ollama_model: str = "llama3.2"
     g4f_model: str = "MiniMaxAI/MiniMax-M2.5"  # DeepInfra provider
     
+    # ── Multi-tier model routing ──────────────────────────────────────────────
+    # Map complexity tier to provider + model. If a tier is missing, falls back
+    # to the next tier in tier_fallback_chain.
+    model_tiers: dict = {}          # populated below in load(); see defaults
+    tier_fallback_chain: list = ["complex", "mid", "low"]
+    planning_enabled: bool = True   # set False to disable planning phase globally
+    dynamic_replan_on_failure: bool = True
+    # Log directory (overrides ~/.rika/logs default when set explicitly)
+    log_dir: str = ""
+
     max_background_agents_per_user: int = 10
     wake_event_retention_days: int = 30
     max_concurrent_orchestrations_per_user: int = 2
@@ -242,6 +252,20 @@ class Config(BaseModel):
             else "You are a helpful, precise, and thoughtful AI assistant."
         )
         cfg.system_prompt = f"{identity}\n{cfg.get_tools_prompt()}\n{cls.TECHNICAL_MANDATES}"
+
+        # Populate model_tiers defaults if not set in config.json
+        if not cfg.model_tiers:
+            priority = cfg.default_provider_priority or ["groq", "openrouter", "gemini"]
+            _primary = priority[0] if priority else "groq"
+            _groq_mid   = "llama-3.3-70b-versatile"
+            _groq_low   = "llama-3.1-8b-instant"
+            _or_complex = "anthropic/claude-opus-4-5"
+            cfg.model_tiers = {
+                "complex": {"provider": "openrouter", "model": _or_complex},
+                "mid":     {"provider": _primary,     "model": cfg.groq_model or _groq_mid},
+                "low":     {"provider": "groq",       "model": _groq_low},
+            }
+
         return cfg
 
     @classmethod

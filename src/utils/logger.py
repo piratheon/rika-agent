@@ -1,44 +1,59 @@
+"""Logger — structured logging to ~/.rika/logs/.
+
+Log files rotate per-process-start:
+  ~/.rika/logs/rk-YYYYMMDD-HHMMSS-mmm.log
+
+Falls back to ./logs/ if ~/.rika is not yet initialised (e.g. unit tests).
+"""
+from __future__ import annotations
+
 import logging
 import os
-import structlog
 from datetime import datetime
+from pathlib import Path
 
 
-def _ensure_log_dir(path: str):
-    d = os.path.dirname(path)
-    if d and not os.path.exists(d):
-        os.makedirs(d, exist_ok=True)
-
-
-def _get_log_path():
-    # Format: logs/rk-[date]-[time:(hour-minute-second-ms)].log
+def _log_path() -> str:
     now = datetime.now()
-    # ms is %f, we'll take first 3 digits for ms
-    ms = now.strftime("%f")[:3]
-    filename = now.strftime(f"rk-%Y%m%d-%H%M%S-{ms}.log")
-    path = os.path.join("logs", filename)
-    _ensure_log_dir(path)
-    return path
+    ms  = now.strftime("%f")[:3]
+    fname = now.strftime(f"rk-%Y%m%d-%H%M%S-{ms}.log")
+    rika_logs = Path.home() / ".rika" / "logs"
+    try:
+        rika_logs.mkdir(parents=True, exist_ok=True)
+        return str(rika_logs / fname)
+    except OSError:
+        fallback = Path("logs")
+        fallback.mkdir(parents=True, exist_ok=True)
+        return str(fallback / fname)
 
 
-LOG_PATH = _get_log_path()
+LOG_PATH  = _log_path()
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
-# Configure stdlib logging
-handler = logging.FileHandler(LOG_PATH)
-handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-root = logging.getLogger()
-root.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+# stdlib root logger
+_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+_handler.setFormatter(
+    logging.Formatter(
+        "[%(asctime)s] [%(levelname)-8s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+)
+_root = logging.getLogger()
+_root.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+if not any(
+    isinstance(h, logging.FileHandler)
+    and getattr(h, "baseFilename", None) == os.path.abspath(LOG_PATH)
+    for h in _root.handlers
+):
+    _root.addHandler(_handler)
 
-# Silence noisy dependencies
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.WARNING)
+# Silence noisy third-party loggers
+for _noisy in ("httpx", "httpcore", "telegram", "discord", "urllib3"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
-if not any(isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', None) == os.path.abspath(LOG_PATH) for h in root.handlers):
-    root.addHandler(handler)
+# structlog
+import structlog
 
-# Configure structlog
 structlog.configure(
     processors=[
         structlog.processors.TimeStamper(fmt="iso"),

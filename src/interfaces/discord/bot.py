@@ -153,7 +153,11 @@ class DiscordBot:
         if message.author.bot:
             return
 
-        # Auth gate
+        # Auth gate — patch_discord_auth_and_db: bugA_discord_owner_id
+        # DISCORD_OWNER_ID must be your Discord user ID (18-digit snowflake),
+        # NOT your Telegram user ID. They are never the same number.
+        # Find your Discord ID: Settings → Advanced → Developer Mode ON,
+        # then right-click your username → Copy User ID.
         if self._owner_user_id:
             if str(message.author.id) != self._owner_user_id:
                 return
@@ -186,29 +190,37 @@ class DiscordBot:
     async def _dispatch_orchestration(
         self, message: discord.Message, text: str, channel_id: str
     ) -> None:
-        from src.db.chat_store import get_or_create_user, add_chat_message, get_chat_history, get_chat_summary
+        # patch_discord_auth_and_db: bugB_bugC_dispatch_fixed
+        # patch_deep_scan_2: B3_list_api_keys
+        from src.db.chat_store import add_chat_message, get_chat_history, get_summary_data
+        from src.db.key_store import upsert_user, list_api_keys as get_api_keys_by_user
 
         user_id_int = message.author.id
         channel = message.channel
 
-        # Get or create user
-        user = await get_or_create_user(str(user_id_int), message.author.display_name or "DiscordUser")
-        user_id = user["id"]
+        # Bug B fix: upsert_user(platform, platform_user_id, username)
+        user_id = await upsert_user(
+            "discord",
+            str(user_id_int),
+            message.author.display_name or "DiscordUser",
+        )
 
-        # History & summary
+        # Bug C fix: get_summary_data returns {"summary": str, "last_msg_id": int} | None
         history = await get_chat_history(user_id, limit=10)
-        summary = await get_chat_summary(user_id)
+        summary_data = await get_summary_data(user_id)
+        summary = summary_data["summary"] if summary_data else None
         cfg = _cfg()
 
-        # Build context string (same as Telegram handler)
-        from src.db.key_store import get_api_keys_by_user
+        # Build context string
         keys = await get_api_keys_by_user(user_id)
         available = [k["provider"] for k in keys] if keys else []
         if available:
             context_parts = [f"user configured providers: {', '.join(available)}"]
         else:
             context_parts = ["user has NO providers configured"]
-        priority = cfg.get_active_providers(available)
+        # cfg.get_active_providers doesn't exist — inline the same filter app.py uses
+        all_priorities = cfg.default_provider_priority or ["gemini", "groq", "openrouter"]
+        priority = [p for p in all_priorities if p in set(available)]
         if priority:
             context_parts.append(f"active provider priority: {', '.join(priority)}")
 
@@ -293,16 +305,22 @@ class DiscordBot:
                 logger.debug("direct_reply_provider_failed",
                              provider=provider_name, error=str(exc))
 
-        err = str(last_error or "").lower()
-        if "429" in err or "quota" in err or "rate limit" in err:
-            msg = "All providers are rate-limited. Wait a few minutes and try again."
-        elif "401" in err or "unauthorized" in err or "no api key" in err:
-            msg = "No working API key found. Add one with /addkey."
-        elif "timeout" in err or "timed out" in err:
-            msg = "The AI provider timed out. Please try again."
-        else:
-            msg = "All AI providers failed to respond. Try again in a moment."
-        await channel.send(msg)
+        # patch_restore_retry: fix2_discord_direct_reply_fallthrough
+        # All providers failed — fall through to full orchestration with retry.
+        logger.warning("discord_direct_reply_fallthrough_to_orchestration",
+                       error=str(last_error or ""))
+        sent = await channel.send(
+            "Having trouble reaching providers — retrying with full retry logic..."
+        )
+        handle = f"discord:{message.channel.id}:{sent.id}"
+        sem = _get_semaphore(channel_id)
+        asyncio.get_event_loop().create_task(
+            self._run_orchestration_guarded(
+                sem, channel_id, handle,
+                user_id, context_str, text,
+                history, summary, _cfg(),
+            )
+        )
 
     async def _run_orchestration_guarded(
         self, sem: asyncio.Semaphore, channel_id: str, handle: str,
@@ -325,7 +343,12 @@ class DiscordBot:
                 if self._sink:
                     await self._sink.send_text(channel_id, text)
 
+            # patch_restore_retry: fix3_orchestrator_sink_handle
+            # Pass sink and handle so show_countdown() can render the progress
+            # bar and Stop/Retry buttons on the correct platform.
             orch = Orchestrator(
+                sink=self._sink,
+                handle=handle,
                 on_message=_on_msg,
                 is_cancelled=lambda cid: (
                     self._sink.is_cancelled(cid) if self._sink else False

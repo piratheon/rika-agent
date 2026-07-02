@@ -1,64 +1,72 @@
 {
   "_comment": "Copy this to config.json and fill in your values. Never commit config.json with real keys. Owner authentication is set via OWNER_USER_ID in .env, not here.",
-
   "bot_name": "rika-agent",
-
-  "default_provider_priority": ["groq", "openrouter", "gemini"],
+  "default_provider_priority": [
+    "groq",
+    "openrouter",
+    "gemini"
+  ],
   "default_model": "gemini-2.0-flash",
-
   "enable_code_execution": true,
   "enable_wikipedia_search": true,
   "enable_web_search": true,
   "enable_web_fetch": true,
   "enable_command_security": true,
   "command_security_level": "standard",
-
   "sandbox_level": 1,
-
   "workspace_path": "~/.rika/shared",
   "workspace_max_size_mb": 500,
-
   "max_context_messages": 40,
   "max_concurrent_orchestrations_per_user": 2,
   "max_background_agents_per_user": 10,
   "tool_timeout_seconds": 10,
-
   "provider_max_retries": 2,
   "provider_retry_delay": 2.0,
-
   "gemini_quota_reset_utc_hour": 8,
   "groq_quota_reset_utc_hour": 0,
   "openrouter_quota_reset_utc_hour": 0,
-
   "groq_model": "llama-3.3-70b-versatile",
   "openrouter_model": "google/gemini-2.0-flash-001",
   "gemini_model": "gemini-2.0-flash",
-
   "ollama_enabled": false,
   "ollama_base_url": "http://localhost:11434",
   "ollama_default_model": "llama3.2",
   "ollama_model": "llama3.2",
-
   "g4f_enabled": false,
   "g4f_model": "MiniMaxAI/MiniMax-M2.5",
-
   "nvidia_enabled": false,
   "nvidia_model": "z-ai/glm-5.1",
   "nvidia_auto_detect": true,
-
   "vercel_enabled": false,
   "vercel_model": "openai/gpt-4o-mini",
   "vercel_auto_detect": true,
-
   "vercel_postgres_enabled": false,
   "vercel_postgres_pool_min": 2,
   "vercel_postgres_pool_max": 10,
   "vercel_kv_enabled": false,
-
   "enable_telegram": true,
   "enable_api": false,
-
   "log_level": "info",
-
-  "_platforms": "Platforms auto-detect from env vars (TELEGRAM_BOT_TOKEN, etc.). Set enable_* to false to force-disable."
+  "_platforms": "Platforms auto-detect from env vars (TELEGRAM_BOT_TOKEN, etc.). Set enable_* to false to force-disable.",
+  "model_tiers": {
+    "complex": {
+      "provider": "openrouter",
+      "model": "anthropic/claude-opus-4-5"
+    },
+    "mid": {
+      "provider": "groq",
+      "model": "llama-3.3-70b-versatile"
+    },
+    "low": {
+      "provider": "groq",
+      "model": "llama-3.1-8b-instant"
+    }
+  },
+  "tier_fallback_chain": [
+    "complex",
+    "mid",
+    "low"
+  ],
+  "planning_enabled": true,
+  "dynamic_replan_on_failure": true
 }

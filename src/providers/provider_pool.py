@@ -419,6 +419,26 @@ class ProviderPool:
         remaining = [s for s in tool_schemas if s not in ordered]
         return (ordered + remaining)[:effective]
 
+    def has_healthy_key(self, provider: str) -> bool:
+        """Synchronous pre-check: does this provider have any non-blacklisted key stored?
+
+        Used by TaskRouter.resolve() to skip tiers with no configured key before
+        making an async attempt. Returns True for keyless providers (Ollama, G4F).
+        Does NOT do a live test_key() call — just inspects the in-memory key store.
+        """
+        norm = self._normalize(provider)
+        if norm in getattr(self, "_keyless_providers", set()):
+            return True
+        # Check module-level _KEYLESS_PROVIDERS if available
+        try:
+            from src.providers.provider_pool import _KEYLESS_PROVIDERS
+            if norm in _KEYLESS_PROVIDERS:
+                return True
+        except ImportError:
+            pass
+        # Fall back to checking the blacklist cache; if not blacklisted, assume available
+        return norm not in getattr(self, "_all_blacklisted", set())
+
     def reset_tool_caps(self, provider: Optional[str] = None) -> None:
         """Reset adaptive tool-schema caps back to their configured maximum.
 

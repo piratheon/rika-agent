@@ -8,7 +8,9 @@ This module contains the shared logic used by ALL interfaces:
 
 No interface-specific imports here. Only pure agent logic.
 """
-from src.core.complexity import classify_complexity
+from src.core.complexity import classify_complexity, classify_complexity_sync
+from src.core.task_router import TaskRouter
+from src.core.skill_registry import SkillRegistry, ensure_skills_bootstrapped
 from src.core.context import ContextBuilder
 from src.core.models import AgentState, AgentStatus, MessageType, ToolCall, ToolResult
 from src.core.orchestrator import Orchestrator
@@ -24,6 +26,10 @@ __all__ = [
     "ToolCall",
     "ToolResult",
     "classify_complexity",
+    "classify_complexity_sync",
+    "TaskRouter",
+    "SkillRegistry",
+    "ensure_skills_bootstrapped",
 ]
 from src.core.event_bus import emit, get_bus, subscribe, teardown as teardown_session
 from src.core.models import EventType, SessionEvent

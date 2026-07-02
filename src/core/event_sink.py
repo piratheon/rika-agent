@@ -37,7 +37,14 @@ class EventSink:
     async def edit_message(
         self, handle: str, text: str, **kwargs
     ) -> None:
-        adapter = self._router.primary
+        # patch_deep_scan: bug5_edit_message_routing
+        # Handles are platform-prefixed: "tg:chat:msg", "discord:ch:msg".
+        # Route by prefix so a Discord edit handle is not silently sent to
+        # the Telegram adapter in multi-platform deployments.
+        try:
+            adapter = self._router.route(handle)
+        except ValueError:
+            adapter = self._router.primary
         if adapter is not None:
             await adapter.edit_message(handle, text, **kwargs)
 
@@ -69,7 +76,13 @@ class EventSink:
         on_stop: Optional[asyncio.Event] = None,
         on_retry: Optional[asyncio.Event] = None,
     ) -> str:
-        adapter = self._router.primary
+        # patch_restore_retry: fix4_show_countdown_routing
+        # Route by handle prefix so a Discord handle is not sent to the
+        # Telegram adapter (same fix as edit_message in bug5).
+        try:
+            adapter = self._router.route(handle)
+        except ValueError:
+            adapter = self._router.primary
         if adapter is not None and adapter.supports_interactive():
             return await adapter.show_countdown(
                 handle, wait_seconds, attempt,
