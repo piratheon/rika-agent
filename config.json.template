@@ -49,18 +49,28 @@
   "log_level": "info",
   "_platforms": "Platforms auto-detect from env vars (TELEGRAM_BOT_TOKEN, etc.). Set enable_* to false to force-disable.",
   "model_tiers": {
-    "complex": {
-      "provider": "openrouter",
-      "model": "anthropic/claude-opus-4-5"
-    },
-    "mid": {
-      "provider": "groq",
-      "model": "llama-3.3-70b-versatile"
-    },
-    "low": {
-      "provider": "groq",
-      "model": "llama-3.1-8b-instant"
-    }
+    "complex": [
+      {
+        "provider": "openrouter",
+        "model": "anthropic/claude-opus-4-5"
+      },
+      {
+        "provider": "openrouter",
+        "model": "z-ai/glm-4-32b"
+      }
+    ],
+    "mid": [
+      {
+        "provider": "groq",
+        "model": "llama-3.3-70b-versatile"
+      }
+    ],
+    "low": [
+      {
+        "provider": "groq",
+        "model": "llama-3.1-8b-instant"
+      }
+    ]
   },
   "tier_fallback_chain": [
     "complex",
@@ -68,5 +78,6 @@
     "low"
   ],
   "planning_enabled": true,
-  "dynamic_replan_on_failure": true
+  "dynamic_replan_on_failure": true,
+  "_comment_model_tiers": "Single model for everything: set 'all' key instead of complex/mid/low. Per-tier arrays are tried in order on failure before falling through to the next tier in tier_fallback_chain."
 }

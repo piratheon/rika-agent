@@ -514,21 +514,80 @@ class Orchestrator:
         self, user_id: int, tier: str,
         messages: List[Dict], tool_schemas: List[Dict],
     ) -> Tuple[Any, Optional[str]]:
-        """Try tier (with fallback chain) returning (resp, last_error)."""
+        """Iterate the full model chain for the given tier, returning (resp, last_error).
+
+        Within-tier: models tried in list order.
+        Cross-tier:  on all-fail, falls through to the next tier in fallback_chain.
+        Exhausted:   returns (None, last_error); the orchestrator countdown loop
+                     retries from the top, cycling back to the first model.
+        """
+        # patch_model_chains: full_chain_iteration
         cfg = self.config
         _max_retries = getattr(cfg, "provider_max_retries", 2)
         _base_delay  = getattr(cfg, "provider_retry_delay", 2.0)
 
-        try:
-            provider, payload = self.router.payload_for_tier(tier, self.pool, messages)
-        except RuntimeError as exc:
-            # No key for any tier — surface as no-key error string
-            return None, str(exc)
+        chain = self.router.get_attempt_chain(tier)
+        last_error: Optional[str] = None
 
-        return await self._raw_provider_call(
-            user_id, provider, payload, tool_schemas,
-            max_retries=_max_retries, base_delay=_base_delay,
+        for attempt_tier, provider, model in chain:
+            if self._cancelled(""):
+                return None, "cancelled"
+
+            payload = {**{"messages": messages}, "model": model}
+            resp, err = await self._raw_provider_call(
+                user_id, provider, payload, tool_schemas,
+                max_retries=_max_retries, base_delay=_base_delay,
+            )
+            if resp is not None:
+                if attempt_tier != tier:
+                    logger.warning(
+                        "task_router_tier_fallback",
+                        requested=tier, used=attempt_tier,
+                        provider=provider, model=model,
+                    )
+                return resp, None
+
+            last_error = err
+            err_lower = (err or "").lower()
+
+            # Hard auth failure for this specific key — skip to next model.
+            # Rate-limit / quota / timeout are retried within _raw_provider_call
+            # already; if we reach here they've all been exhausted for this model.
+            auth_fail = any(t in err_lower for t in (
+                "401", "403", "invalid_api_key", "authentication",
+                "permission_denied", "account_deactivated",
+            ))
+            if auth_fail:
+                logger.warning(
+                    "task_router_skip_auth_fail",
+                    provider=provider, model=model, error=err,
+                )
+                continue  # try next model in chain
+
+            # No-key error for an entire provider — skip to next model
+            if "no working" in err_lower or "no api key" in err_lower:
+                continue
+
+            # Any other error (quota, timeout already exhausted): continue chain
+            logger.warning(
+                "task_router_model_failed",
+                provider=provider, model=model,
+                tier=attempt_tier, error=(err or "")[:120],
+            )
+            # Small pause between model switches to avoid hammering APIs
+            import asyncio as _asyncio
+            await _asyncio.sleep(1.0)
+
+        # All models in the full chain exhausted for this round.
+        # Return (None, last_error) — the orchestrator countdown loop will
+        # call us again, restarting from the top of the chain (natural cycle-back).
+        logger.warning(
+            "task_router_chain_exhausted",
+            tier=tier,
+            chain_len=len(chain),
+            last_error=(last_error or "")[:120],
         )
+        return None, last_error
 
     async def _raw_provider_call(
         self, user_id: int, provider: str, payload: Dict,
