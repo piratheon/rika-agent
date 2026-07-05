@@ -33,3 +33,6 @@ __all__ = [
 ]
 from src.core.event_bus import emit, get_bus, subscribe, teardown as teardown_session
 from src.core.models import EventType, SessionEvent
+from src.core.errors import ErrorKind, classify_error, is_fatal, is_quota, is_retryable
+from src.core.session_usage import SessionUsage
+from src.core.session_store import PausedTask, TaskStore

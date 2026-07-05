@@ -95,6 +95,12 @@ class Config(BaseModel):
     # Log directory (overrides ~/.rika/logs default when set explicitly)
     log_dir: str = ""
 
+    max_tool_result_chars: int = 8000
+    compact_after_turns: int = 12
+    min_free_disk_mb: int = 0
+    discord_edit_throttle_ms: int = 800
+    track_token_usage: bool = True
+    auto_pause_on_quota: bool = True
     max_background_agents_per_user: int = 10
     wake_event_retention_days: int = 30
     max_concurrent_orchestrations_per_user: int = 2
@@ -108,28 +114,34 @@ class Config(BaseModel):
     tool_timeout_seconds: int = 10
 
     TECHNICAL_MANDATES: ClassVar[str] = (
-        "\n\n--- OPERATIONAL RULES ---\n"
+        "\n\n--- OPERATIONAL RULES (READ CAREFULLY) ---\n"
+        "\n"
+        "TOOL CALLING — CRITICAL:\n"
+        "Tools are invoked ONLY through the JSON function-calling API.\n"
+        "Writing tool calls as text (e.g. run_shell_command(\"ls\") in prose or markdown)\n"
+        "does NOTHING — no code runs, no result is returned, the loop stalls.\n"
+        "NEVER write tool calls as text, markdown, code blocks, or Python syntax.\n"
+        "Every response must be EITHER a JSON function call OR end_thinking().\n"
+        "Mixing prose + tool-call text is forbidden and will be corrected.\n"
+        "\n"
+        "STEP-BY-STEP THINKING DISCIPLINE:\n"
+        "Step 1 — Planning: call declare_step(title=\"Plan: <goal>\", status=\"running\")\n"
+        "          then execute the FIRST concrete action only.\n"
+        "Step 2+ — For each subsequent action: call declare_step(title=\"<action>\")\n"
+        "           then execute that single action. Do NOT batch multiple actions.\n"
+        "Final    — When ALL steps are done: call end_thinking(message=\"<final answer>\").\n"
+        "           end_thinking MUST be your ONLY response in that turn. No other text.\n"
+        "\n"
+        "RULES:\n"
         "1. ACCURACY: Ground responses in reality. Use tools to verify facts.\n"
-        "2. RESPONSE: After gathering information, respond naturally and completely.\n"
-        "3. REASONING: You can reason, think, and respond directly without tools for:\n"
-        "   - Casual conversation, greetings, questions\n"
-        "   - Factual questions from your training knowledge\n"
-        "   - Analysis, explanations, creative tasks\n"
-        "   - Any task that doesn't require real-time data or system access\n"
-        "4. TOOLS require background watchers: For tool execution (web_search, shell commands, etc.),\n"
-        "   the user must have active watchers. Suggest /watch or /autowatch if they need tools.\n"
-        "5. NO HALLUCINATION: If a tool fails or isn't available, be honest. Never fabricate results.\n"
-        "6. WORKSPACE: Your sandbox is ~/.rika/shared (path in runtime context).\n"
-        "   Write temp files, scripts, and analysis artifacts there by default.\n"
-        "7. COMMAND SECURITY: Destructive commands are blocked automatically.\n"
-        "   Prefix medium-risk commands with 'CONFIRM: ' after warning the user.\n"
-        "8. NARRATION: Before starting any group of 2+ tool calls for a distinct goal,\n"
-        "   call declare_step(title=\"...\") first. After completion call\n"
-        "   declare_step(title=\"...\", status=\"done\") or status=\"failed\".\n"
-        "   Keep titles short and action-oriented: 'Creating backend', not 'I will now create...'\n"
-        "9. FINISHING: When you have a final answer, you MUST call end_thinking(message=\"...\").\n"
-        "   This is the ONLY valid way to end the processing loop.\n"
-        "   NEVER produce raw text output without a tool call.\n"
+        "2. NO HALLUCINATION: Never fabricate tool results. If a tool fails, report honestly.\n"
+        "3. WORKSPACE: Default working directory is ~/.rika/shared.\n"
+        "4. COMMAND SECURITY: Destructive commands are auto-blocked.\n"
+        "   Prefix medium-risk with CONFIRM: after warning the user.\n"
+        "5. DECLARE STEPS: Every distinct goal needs a declare_step() call before execution.\n"
+        "   Keep titles short: \'Downloading captions\' not \'I will now download the captions\'.\n"
+        "6. ONE ACTION PER TURN: Call one tool at a time unless the tools are fully independent\n"
+        "   reads (e.g. two web_search calls that do not depend on each other).\n"
     )
 
     def get_tools_prompt(self) -> str:

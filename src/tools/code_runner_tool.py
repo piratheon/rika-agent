@@ -13,6 +13,10 @@ async def run_python(code: str, timeout_seconds: int = 30,
     cfg = Config.get()
     level = getattr(cfg, "sandbox_level", 0)
     ws = workspace or str(get_workspace_path(cfg.workspace_path))
+    _mf = getattr(cfg,'min_free_disk_mb',0)
+    if _mf > 0:
+        import shutil as _sh; _fr = _sh.disk_usage(ws).free//(1024*1024)
+        if _fr < _mf: return {'error':f'Disk quota: {_fr}MB free, minimum {_mf}MB required.','stdout':'','exit_code':-1}
     # Level 0 (RestrictedPython) blocks __import__ entirely.
     # Auto-escalate to level 1 (subprocess) when code has import statements.
     import re as _re

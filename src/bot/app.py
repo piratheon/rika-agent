@@ -1727,6 +1727,80 @@ async def providers_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_html("\n".join(lines))
 
 
+
+async def usage_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/usage — show per-session token and cost summary."""
+    from src.core.session_usage import SessionUsage
+    channel_id = f"tg:{update.effective_chat.id}"
+    usage: SessionUsage = context.bot_data.get(f"usage:{channel_id}")
+    if usage is None or usage.total_calls == 0:
+        await update.message.reply_text("No usage data for this session yet.")
+        return
+    await update.message.reply_text(f"<b>Session usage</b>\n{usage.summary()}",
+                                    parse_mode="HTML")
+
+
+async def resume_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/resume [task_id] — continue a quota-paused task."""
+    from src.core.session_store import TaskStore
+    from src.core.session_usage import SessionUsage
+    from src.core.orchestrator import Orchestrator
+    cfg = Config.get()
+    tg_user = update.effective_user
+    from src.db.key_store import upsert_user
+    user_id = await upsert_user("telegram", str(tg_user.id), tg_user.username)
+    channel_id = f"tg:{update.effective_chat.id}"
+    store = TaskStore.get()
+    args = context.args or []
+    if args:
+        task = store.load(args[0])
+        if task is None or task.user_id != user_id:
+            await update.message.reply_text(f"Task '{args[0]}' not found.")
+            return
+    else:
+        tasks = store.load_for_user(user_id)
+        if not tasks:
+            await update.message.reply_text("No paused tasks found.")
+            return
+        task = tasks[-1]
+
+    sent = await update.message.reply_text(
+        f"Resuming task {task.task_id}...\n"
+        f"Original: {task.original_message[:80]}"
+    )
+    handle = f"tg:{sent.chat_id}:{sent.message_id}"
+    prior_usage = SessionUsage.from_dict(task.session_usage) if task.session_usage else None
+
+    orch = Orchestrator(
+        config=cfg,
+        sink=_sink,
+        handle=handle,
+        on_message=None,
+        is_cancelled=lambda cid: _sink.is_cancelled(cid) if _sink else False,
+        resume_thought_history=task.thought_history,
+        resume_plan=task.plan,
+        resume_step_idx=task.current_step_idx,
+        resume_agent_results=task.agent_results,
+        resume_usage=prior_usage,
+    )
+    store.delete(task.task_id)
+
+    async def _on_msg(text: str, _results: dict) -> None:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text=text, parse_mode="HTML"
+        )
+
+    orch.on_message = _on_msg
+    sem = _get_semaphore(channel_id)
+    asyncio.create_task(_run_orchestration_guarded(
+        sem, channel_id, handle,
+        user_id, task.system_prompt or cfg.system_prompt,
+        task.original_message, task.thought_history,
+        task.summary, cfg,
+        orch_override=orch,
+    ))
+
+
 async def reload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/reload — reload config and tool registry from disk."""
     owner = os.environ.get("OWNER_USER_ID")
@@ -1737,6 +1811,11 @@ async def reload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     from src.tools.registry import invalidate_registry
     Config.reload()
     invalidate_registry()
+    try:
+        from src.core.task_router import TaskRouter
+        TaskRouter.invalidate()
+    except Exception:
+        pass
     cfg = Config.get()
     await update.message.reply_text(
         f"Config reloaded.\nModel: {cfg.default_model}\n"
@@ -2012,6 +2091,24 @@ async def start_shared_infra(config: Config) -> None:
     except Exception as exc:
         logger.warning("task_router_init_failed", error=str(exc))
 
+    # Notify owner of any tasks paused before bot restart
+    try:
+        from src.core.session_store import TaskStore
+        _pending = TaskStore.get().load_pending(platform="telegram")
+        if _pending:
+            owner_id = os.environ.get("OWNER_USER_ID", "")
+            if owner_id:
+                lines = [f"Bot restarted. {len(_pending)} paused task(s) found:"]
+                for t in _pending:
+                    lines.append(f"  [{t.task_id}] {t.original_message[:60]}")
+                lines.append("Use /resume or /resume <task_id> to continue.")
+                _paused_notice = "\n".join(lines)
+                asyncio.get_event_loop().create_task(
+                    _send_startup_notice(int(owner_id), _paused_notice)
+                )
+    except Exception as exc:
+        logger.warning("paused_task_notify_failed", error=str(exc))
+
 
 async def start_background_tasks(config: Config) -> None:
     """Start scheduler + unblacklist loop.
@@ -2101,6 +2198,8 @@ def build_application(config: Config):
     app.add_handler(CommandHandler("wakelog", wakelog_handler))
     app.add_handler(CommandHandler("providers", providers_handler))
     app.add_handler(CommandHandler("reload", reload_handler))
+    app.add_handler(CommandHandler("usage",  usage_handler))
+    app.add_handler(CommandHandler("resume", resume_handler))
     app.add_handler(CommandHandler("files", files_handler))
     app.add_handler(CommandHandler("cleanworkspace", cleanworkspace_handler))
     app.add_handler(CommandHandler("cmdhistory", cmdhistory_handler))

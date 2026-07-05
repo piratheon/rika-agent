@@ -31,6 +31,7 @@ class DiscordAdapter(InterfaceAdapter):
 
         # Per-channel state
         self._cancel_flags: Dict[str, bool] = {}
+        self._last_edit_ms: Dict[str, float] = {}
         self._active_tasks: Dict[str, asyncio.Task] = {}
         self._retry_events: Dict[str, asyncio.Event] = {}
         self._stop_events: Dict[str, asyncio.Event] = {}
@@ -48,6 +49,12 @@ class DiscordAdapter(InterfaceAdapter):
         return handle
 
     async def edit_message(self, handle: str, text: str, **kwargs) -> None:
+        import time
+        from src.config import Config
+        throttle_ms = getattr(Config.get(), "discord_edit_throttle_ms", 800)
+        now_ms = time.monotonic() * 1000
+        if now_ms - self._last_edit_ms.get(handle, 0.0) < throttle_ms:
+            return
         channel_id, message_id = _parse_handle(handle)
         channel = self._client.get_channel(channel_id)
         if channel is None:
@@ -55,6 +62,7 @@ class DiscordAdapter(InterfaceAdapter):
         try:
             msg = await channel.fetch_message(message_id)
             await msg.edit(content=text, **kwargs)
+            self._last_edit_ms[handle] = time.monotonic() * 1000
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
 

@@ -112,6 +112,13 @@ async def run_shell_command(command: str, user_id: int = 0, workspace: Optional[
     logger.info("executing_shell_command", command=cmd[:200], workspace=ws)
 
     try:
+        from src.config import Config as _C; _mf = getattr(_C.get(),"min_free_disk_mb",0)
+        if _mf > 0:
+            import shutil as _sh; _fr = _sh.disk_usage(ws).free//(1024*1024)
+            if _fr < _mf: return {"blocked":True,"stdout":"","stderr":f"Disk quota: {_fr}MB free, minimum {_mf}MB required.","exit_code":-1}
+    except Exception: pass
+
+    try:
         loop = asyncio.get_running_loop()
         proc = await loop.run_in_executor(None, lambda: subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=120, cwd=ws
