@@ -24,15 +24,21 @@ _USER_SKILLS_DIR    = Path.home() / ".rika" / "skills"
 
 
 def ensure_skills_bootstrapped() -> None:
-    """Copy bundled skills to ~/.rika/skills/ on first run (never overwrites)."""
+    """Copy bundled skills to ~/.rika/skills/ preserving subdirectory structure.
+
+    Never overwrites existing user-edited skills.
+    """
+    # patch_skills_manager: rglob_bootstrap
     _USER_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     if not _BUNDLED_SKILLS_DIR.exists():
         return
-    for src in _BUNDLED_SKILLS_DIR.glob("*.md"):
-        dest = _USER_SKILLS_DIR / src.name
+    for src in sorted(_BUNDLED_SKILLS_DIR.rglob("*.md")):
+        rel  = src.relative_to(_BUNDLED_SKILLS_DIR)
+        dest = _USER_SKILLS_DIR / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
         if not dest.exists():
             shutil.copy2(src, dest)
-            logger.info("skill_bootstrapped", skill=src.stem)
+            logger.info("skill_bootstrapped", skill=str(rel))
 
 
 def _parse_skill_file(path: Path) -> Optional[Dict]:
@@ -91,14 +97,19 @@ class SkillRegistry:
         return cls._instance
 
     def load(self) -> None:
-        """Scan ~/.rika/skills/ and load all valid skill files."""
+        """Scan ~/.rika/skills/ (including subdirectories) and load all skills."""
+        # patch_skills_manager: rglob_load
         ensure_skills_bootstrapped()
         self._skills.clear()
-        for path in sorted(_USER_SKILLS_DIR.glob("*.md")):
+        for path in sorted(_USER_SKILLS_DIR.rglob("*.md")):
             parsed = _parse_skill_file(path)
             if parsed:
+                # Add category from parent directory name
+                rel = path.relative_to(_USER_SKILLS_DIR)
+                parsed["category"] = rel.parts[0] if len(rel.parts) > 1 else ""
                 self._skills[parsed["name"]] = parsed
-                logger.debug("skill_loaded", name=parsed["name"])
+                logger.debug("skill_loaded", name=parsed["name"],
+                             category=parsed.get("category", ""))
         self._loaded = True
         logger.info("skill_registry_loaded", count=len(self._skills))
 
@@ -119,20 +130,24 @@ class SkillRegistry:
         return self._skills.get(name)
 
     def skill_list_prompt(self) -> str:
-        """Compact skill list for injection into every system prompt."""
+        """Compact skill list grouped by category for injection into every system prompt."""
+        # patch_skills_manager: category_grouped_prompt
         self._ensure_loaded()
         if not self._skills:
             return ""
-        lines = [
-            "\n\nAVAILABLE ON-DEMAND SKILLS (call use_skill(skill_name=...) to activate):"
-        ]
+        by_cat: dict[str, list] = {}
         for s in self._skills.values():
-            tools_note = f" [uses: {', '.join(s['tools'])}]" if s["tools"] else ""
-            lines.append(f"  - {s['name']}: {s['description']}{tools_note}")
-        lines.append(
-            "Activating a skill injects its full usage instructions and "
-            "makes its associated tools available."
-        )
+            by_cat.setdefault(s.get("category", "") or "general", []).append(s)
+
+        lines = [
+            "\n\nAVAILABLE ON-DEMAND SKILLS — call use_skill(skill_name=\"name\") to activate:",
+            "  Use skill_manager(action=\"list\") to browse the full skill tree.",
+        ]
+        for cat in sorted(by_cat.keys()):
+            lines.append(f"  [{cat}]")
+            for s in by_cat[cat]:
+                tools_note = f" [{', '.join(s['tools'])}]" if s["tools"] else ""
+                lines.append(f"    {s['name']}: {s['description'][:70]}{tools_note}")
         return "\n".join(lines)
 
     def activate_skill(self, name: str) -> str:

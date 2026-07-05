@@ -90,6 +90,18 @@ class ToolExecutor:
                 f"SKILLS ({len(skills)}):\n  {skill_block}"
             )
 
+        # skill_manager — browse/add/search skills as a directory tree
+        if tool_name == "skill_manager":
+            # patch_skills_manager: skill_manager_intercept
+            from src.tools.skill_manager_tool import skill_manager
+            return await skill_manager(
+                action=arguments.get("action", "list"),
+                name=arguments.get("name", ""),
+                content=arguments.get("content", ""),
+                query=arguments.get("query", ""),
+                category=arguments.get("category", ""),
+            )
+
         # Skill lazy-load — the key innovation
         if tool_name == "use_skill":
             from src.db.chat_store import get_skill, list_skill_names

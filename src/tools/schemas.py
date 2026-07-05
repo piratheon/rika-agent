@@ -408,6 +408,42 @@ ALL_SCHEMAS: List[ToolSchema] = [
         required_params=["path"],
     ),
 
+    # patch_skills_manager: skill_manager_schema
+    ToolSchema(
+        name="skill_manager",
+        description=(
+            "Browse, read, add, or search on-demand skills stored in ~/.rika/skills/. "
+            "Skills are shown as a directory tree. "
+            "Use action=\"list\" to see all skills, \"read\" to inspect a skill's instructions, "
+            "\"search\" to find skills by keyword, \"add\" to create a new skill."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "read", "add", "search"],
+                    "description": "Operation to perform.",
+                },
+                "name": _str_param(
+                    "Skill name — required for read and add. "
+                    "Use lowercase, underscores OK, e.g. \'docker\', \'api_client\'."
+                ),
+                "content": _str_param(
+                    "Full skill markdown for add. Must start with:\n"
+                    "# skill: <name>\n"
+                    "description: <one-line description>\n"
+                    "tools: <comma-separated tool names>"
+                ),
+                "query": _str_param("Keyword to search for across skill names and bodies."),
+                "category": _str_param(
+                    "Optional subdirectory category for add, e.g. \'dev\', \'web\', \'system\'."
+                ),
+            },
+        },
+        required_params=["action"],
+    ),
+
 ]
 
 # Fast lookup by name
