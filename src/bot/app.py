@@ -867,6 +867,11 @@ async def _process_message(
 
     text = override_text or (update.message.text or "").strip()
     logger.info("incoming_message", user_id=update.effective_user.id, length=len(text))
+    # patch_cancel_and_direct_reply: bug1_clear_cancel_on_new_message
+    # Stale cancel flags from a previous stop must not bleed into the next message.
+    _channel_id_early = f"tg:{update.effective_chat.id}"
+    if _adapter is not None:
+        _adapter.clear_cancel(_channel_id_early)
 
     await init_db()
     tg_user = update.effective_user
@@ -958,11 +963,23 @@ async def _handle_direct_reply(
     update, context, user_id, text, context_str, history, summary, cfg, pool, last_msg_id
 ) -> None:
     logger.info("direct_reply_handler", user_id=user_id, text_len=len(text), context_len=len(context_str))
+    # patch_cancel_and_direct_reply: bug2a_lean_system_prompt
+    # Direct reply is a plain conversational response — no tool schemas are sent, so
+    # including TECHNICAL_MANDATES ("you MUST call a function") causes the model to emit
+    # raw JSON function-call syntax as text. Use identity + context only.
     from src.db.chat_store import add_chat_message
+    _agent_identity = getattr(cfg, "agent_name", "Rika")
+    _dr_soul = getattr(cfg, "soul", "")
+    _dr_system = (
+        f"You are {_agent_identity}, a helpful AI assistant.\n"
+        + (_dr_soul.strip() + "\n" if _dr_soul else "")
+        + "Respond naturally and concisely. "
+        + "Do NOT output JSON, function calls, or code unless the user explicitly asks for code."
+    )
     payload = {
         "model": cfg.default_model,
         "messages": [
-            {"role": "system", "content": cfg.system_prompt},
+            {"role": "system", "content": _dr_system},
             {"role": "user", "content": context_str},
         ],
     }
@@ -1095,6 +1112,40 @@ async def _handle_direct_reply(
             )
         )
         return
+
+    # patch_cancel_and_direct_reply: bug2b_strip_json_function_call
+    # Detect raw JSON function-call output emitted by the model instead of a real API call.
+    import re as _re
+    _FC_JSON_RE = _re.compile(
+        r'(?:```(?:json)?\s*)?\{[^{}]*"type"\s*:\s*"function"[^{}]*"name"\s*:\s*"[\w_]+"',
+        _re.DOTALL | _re.IGNORECASE,
+    )
+    if _FC_JSON_RE.search(reply):
+        logger.warning("direct_reply_json_function_call_detected",
+                       first_50=reply[:50])
+        # Strip the JSON blocks and keep any surrounding prose.
+        _clean = _re.sub(r'```(?:json)?\s*\{.*?\}\s*```', '', reply, flags=_re.DOTALL)
+        _clean = _re.sub(r'\{[^{}]*"type"\s*:\s*"function"[^{}]*\}', '', _clean, flags=_re.DOTALL)
+        _clean = _clean.strip()
+        if _clean:
+            # Prose survived — deliver the clean text
+            reply = _clean
+            logger.info("direct_reply_json_stripped", cleaned_len=len(reply))
+        else:
+            # Nothing but function-call JSON — reroute to orchestration
+            logger.info("direct_reply_reroute_no_prose")
+            sent = await update.message.reply_text(f"Working on it...")
+            _ch = f"tg:{update.effective_chat.id}"
+            _hnd = f"tg:{sent.chat_id}:{sent.message_id}"
+            _sem = _get_semaphore(_ch)
+            if _adapter is not None:
+                _adapter.clear_cancel(_ch)
+                _adapter.init_countdown_events(_ch)
+            asyncio.create_task(
+                _run_orchestration_guarded(_sem, _ch, _hnd, user_id,
+                                           context_str, text, history, summary, cfg)
+            )
+            return
 
     await add_chat_message(user_id, "assistant", reply)
     logger.info("direct_reply_sending", reply_len=len(reply))
