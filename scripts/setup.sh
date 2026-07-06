@@ -155,9 +155,11 @@ if [ "$SKIP_ENV" -eq 0 ]; then
         ok "Discord token saved"
 
         echo ""
-        ask "Your Discord user ID (required for single-user auth):"; read -r DS_OWNER
+        say "Your Discord user ID (18-digit snowflake). Find it: Settings → Advanced → Developer Mode ON → right-click username → Copy User ID"
+        ask "Your Discord user ID:"; read -r DS_OWNER
         if [ -n "$DS_OWNER" ] && [ -z "${OWNER_ID:-}" ]; then
             echo "OWNER_USER_ID=\"$DS_OWNER\"" >> .env
+            echo "DISCORD_OWNER_ID=\"$DS_OWNER\"" >> .env
             warn "No Telegram OWNER_USER_ID was set — using Discord ID as owner"
         elif [ -n "$DS_OWNER" ]; then
             info "Telegram OWNER_USER_ID already set — Discord will use same owner ID"
@@ -300,7 +302,7 @@ if [[ "$OL_EN" =~ ^[Yy]$ ]]; then
     OL_MODEL="${OL_MODEL:-llama3.2}"
     python3 -c "
 import json
-c = json.load(open('config.json')) if open('config.json') else {}
+c = json.load(open('config.json')) if os.path.exists('config.json') else {}
 c['ollama_enabled'] = True
 c['ollama_base_url'] = '$OL_URL'
 c['ollama_default_model'] = '$OL_MODEL'
@@ -322,7 +324,7 @@ if [[ "$G4F_EN" =~ ^[Yy]$ ]]; then
     pip install --quiet g4f 2>/dev/null
     python3 -c "
 import json
-c = json.load(open('config.json')) if open('config.json') else {}
+c = json.load(open('config.json')) if os.path.exists('config.json') else {}
 c['g4f_enabled'] = True
 json.dump(c, open('config.json', 'w'), indent=2)
 "
@@ -347,10 +349,87 @@ ok "Workspace: $WORKSPACE"
 
 python3 -c "
 import json
-c = json.load(open('config.json')) if open('config.json') else {}
+c = json.load(open('config.json')) if os.path.exists('config.json') else {}
 c['workspace_path'] = '$WORKSPACE'
 json.dump(c, open('config.json', 'w'), indent=2)
 "
+
+# ── Multi-model routing (optional) ────────────────────────────────────────────
+header "Multi-model routing (optional)"
+say "Route complex tasks to a powerful model and simple tasks to a fast, cheap one."
+say "You can also configure this later by editing config.json directly."
+echo ""
+ask "Configure model tiers now? [y/N]:"; read -r MT_EN
+if [[ "$MT_EN" =~ ^[Yy]$ ]]; then
+    echo ""
+    say "Complex tier: coding, deep analysis.  Examples: anthropic/claude-opus-4-5 (openrouter)"
+    ask "  provider [openrouter]:"; read -r CP; CP="${CP:-openrouter}"
+    ask "  model [anthropic/claude-opus-4-5]:"; read -r CM; CM="${CM:-anthropic/claude-opus-4-5}"
+    echo ""
+    say "Mid tier: orchestrator + executor (default for most tasks)."
+    ask "  provider [groq]:"; read -r MP; MP="${MP:-groq}"
+    ask "  model [llama-3.3-70b-versatile]:"; read -r MM; MM="${MM:-llama-3.3-70b-versatile}"
+    echo ""
+    say "Low tier: summarisation, translation, formatting."
+    ask "  provider [groq]:"; read -r LP; LP="${LP:-groq}"
+    ask "  model [llama-3.1-8b-instant]:"; read -r LM; LM="${LM:-llama-3.1-8b-instant}"
+
+    python3 -c "
+import json, os
+path = 'config.json'
+c = json.load(open(path)) if os.path.exists(path) else {}
+c['model_tiers'] = {
+    'complex': [{'provider': '$CP', 'model': '$CM'}],
+    'mid':     [{'provider': '$MP', 'model': '$MM'}],
+    'low':     [{'provider': '$LP', 'model': '$LM'}],
+}
+c['tier_fallback_chain'] = ['complex', 'mid', 'low']
+json.dump(c, open(path, 'w'), indent=2)
+"
+    ok "Model tiers written to config.json"
+else
+    info "Using defaults — edit config.json to customise later"
+fi
+
+
+# ── Systemd auto-start (optional, Linux only) ────────────────────────────────
+header "Systemd service (optional)"
+if command -v systemctl &>/dev/null; then
+    ask "Install systemd user service to auto-start on boot? [y/N]:"; read -r SD_EN
+    if [[ "$SD_EN" =~ ^[Yy]$ ]]; then
+        SERVICE_DIR="$HOME/.config/systemd/user"
+        mkdir -p "$SERVICE_DIR"
+        cat > "$SERVICE_DIR/rika-agent.service" << UNIT
+[Unit]
+Description=rika-agent AI bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${PROJECT_DIR:-$(pwd)}
+ExecStart=/bin/bash ${PROJECT_DIR:-$(pwd)}/scripts/start.sh
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:$HOME/.rika/logs/rika-agent.service.log
+StandardError=append:$HOME/.rika/logs/rika-agent.service.log
+
+[Install]
+WantedBy=default.target
+UNIT
+        systemctl --user daemon-reload 2>/dev/null
+        systemctl --user enable rika-agent.service 2>/dev/null
+        ok "Service installed: $SERVICE_DIR/rika-agent.service"
+        say "  Start now:   bash scripts/start.sh"
+        say "  Via systemd: systemctl --user start rika-agent"
+        say "  Logs:        journalctl --user -u rika-agent -f"
+    else
+        info "Systemd service skipped"
+    fi
+else
+    info "systemctl not available — skipping service setup"
+fi
+
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
